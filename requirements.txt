@@ -1,0 +1,7 @@
+# Quantum-Ready Cryptography Migration Tool
+# Python 3.8 Dependencies - 2020
+
+cryptography==2.9
+pyOpenSSL==19.1.0
+pqcrypto==0.1.2
+PyYAML==5.3

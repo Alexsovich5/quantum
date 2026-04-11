@@ -1,0 +1,17 @@
+# Quantum Cryptography Scanner Configuration
+# ACORIA - 2020
+
+targets:
+  - 10.0.1.0/24
+  - 10.0.2.0/24
+
+ports:
+  - 443
+  - 8443
+  - 993
+  - 995
+
+timeout: 10
+max_workers: 20
+output_format: json
+output_path: reports/
