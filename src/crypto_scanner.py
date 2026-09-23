@@ -1,6 +1,5 @@
 """
 Cryptographic Scanner
-IT Operations Specialist - ACORIA (2020)
 
 Scans infrastructure for cryptographic implementations,
 identifies quantum-vulnerable algorithms, and generates
