@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  app:
+    build: .
+    image: quantum:dev
+    volumes:
+      - .:/app
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.74.0.0/24

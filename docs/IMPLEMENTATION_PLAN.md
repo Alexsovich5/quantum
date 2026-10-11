@@ -35,7 +35,10 @@ Conventions used in every task:
   (build isolation off so cryptography's unpinned `pyproject.toml` build requirements are not
   fetched at post-2020 versions; see SPEC §6);
   `ENV PYTHONPATH=/app/src`.
-- create `docker-compose.yml` (format `3.8`) — service `app` built from `.`, bind-mounts `.:/app`.
+- create `docker-compose.yml` (format `3.8`) — service `app` built from `.` and tagged `image: quantum:dev`,
+  bind-mounts `.:/app`; the `default` network is pinned to subnet `172.74.0.0/24` so the stack
+  stays inside its allotted address range on a shared Docker host (any host ports published by
+  later tasks use 22400–22499).
 - create `Makefile` — `COMPOSE ?= docker-compose`; targets `build`, `test`, `unit`, `lint`,
   `shell`, `clean`; `PYTEST_ARGS` passthrough.
 - create `requirements-build.txt` — setuptools 47.1.1, wheel 0.34.2, cffi 1.14.0, pycparser 2.20.

@@ -9,7 +9,6 @@ migration recommendations.
 import ssl
 import socket
 import logging
-import json
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
@@ -156,7 +155,10 @@ class CryptoScanner:
             'risk_percentage': round(vulnerable / total * 100, 1) if total else 0,
             'results': results,
             'summary': {
-                'critical': sum(1 for r in results for v in r['vulnerabilities'] if v['threat_level'] == 'critical'),
+                'critical': sum(
+                    1 for r in results for v in r['vulnerabilities']
+                    if v['threat_level'] == 'critical'
+                ),
                 'quantum_safe': total - vulnerable
             }
         }

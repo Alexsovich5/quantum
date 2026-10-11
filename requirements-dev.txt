@@ -1,0 +1,14 @@
+pytest==5.4.3
+pytest-cov==2.10.0
+coverage==5.1
+flake8==3.8.3
+pyflakes==2.2.0
+pycodestyle==2.6.0
+mccabe==0.6.1
+attrs==19.3.0
+more-itertools==8.4.0
+packaging==20.4
+pluggy==0.13.1
+py==1.8.2
+wcwidth==0.2.4
+pyparsing==2.4.7
