@@ -1,0 +1,60 @@
+# Post-quantum migration roadmap
+
+Generated: {{ roadmap.generated_at }}
+Scan date: {{ report.scan_date }}
+
+## Summary
+
+| Metric | Value |
+|---|---|
+| Total endpoints | {{ report.total_endpoints }} |
+| Vulnerable endpoints | {{ report.vulnerable_endpoints }} |
+| Risk percentage | {{ report.risk_percentage }}% |
+| Unreachable | {{ report.unreachable | default(0) }} |
+| Critical findings | {{ summary.critical | default(0) }} |
+| Quantum-safe endpoints | {{ summary.quantum_safe | default(0) }} |
+
+## Endpoints
+
+{% if endpoints %}
+| Endpoint | Protocol | Negotiated suite | Risk score | Findings |
+|---|---|---|---|---|
+{% for row in endpoints %}
+| {{ row.target }} | {{ row.protocol }} | {{ row.suite }} | {{ row.risk }} | {{ row.findings }} |
+{% endfor %}
+{% else %}
+No endpoints completed a TLS handshake.
+{% endif %}
+
+{% if phases %}
+{% for phase in phases %}
+## Phase {{ phase.priority }}: {{ phase.component }} {{ phase.algorithm }} -> {{ phase.replacement }}
+
+- Threat class: {{ phase.threat_class }}
+- Highest risk score: {{ phase.max_risk }}
+- Replacement: {{ phase.replacement }}
+{% if phase.alternative %}
+- Alternative: {{ phase.alternative }}
+{% endif %}
+{% if phase.hybrid %}
+- Hybrid step: {{ phase.hybrid }}
+{% endif %}
+- Targets: {{ phase.targets | join(', ') }}
+{% if phase.bench %}
+- Measured cost: see {{ phase.bench.algorithm }} in the benchmark table
+{% endif %}
+
+{% endfor %}
+{% else %}
+No migration phases: no quantum-vulnerable or weak algorithms were found.
+
+{% endif %}
+{% if bench_rows %}
+## Benchmark
+
+| Algorithm | Kind | Public key (B) | Secret key (B) | Ciphertext / signature (B) | Keygen (ms) | Encap / sign (ms) | Decap / verify (ms) |
+|---|---|---|---|---|---|---|---|
+{% for row in bench_rows %}
+| {{ row.algorithm }} | {{ row.kind }} | {{ row.public_key_len }} | {{ row.secret_key_len }} | {{ row.output_len }} | {{ row.keygen_ms }} | {{ row.op1_ms }} | {{ row.op2_ms }} |
+{% endfor %}
+{% endif %}

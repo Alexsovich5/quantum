@@ -6,10 +6,12 @@ setup(
     description="Scan TLS endpoints for quantum-vulnerable public-key cryptography",
     package_dir={"": "src"},
     packages=find_packages("src"),
+    package_data={"quantum_tool": ["templates/*.j2"]},
     python_requires=">=3.8",
     install_requires=[
         "cryptography==2.9.2",
         "pyOpenSSL==19.1.0",
         "PyYAML==5.3.1",
+        "Jinja2==2.11.2",
     ],
 )
