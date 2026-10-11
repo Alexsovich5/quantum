@@ -1,9 +1,9 @@
-import crypto_scanner
-from crypto_scanner import CryptoScanner, QUANTUM_VULNERABLE
+from quantum_tool import crypto_scanner
+from quantum_tool.crypto_scanner import CryptoScanner, QUANTUM_VULNERABLE
 
 
 def test_module_is_importable_from_src():
-    assert crypto_scanner.__file__.endswith("src/crypto_scanner.py")
+    assert crypto_scanner.__file__.endswith("src/quantum_tool/crypto_scanner.py")
 
 
 def test_quantum_vulnerable_table_lists_public_key_algorithms():
