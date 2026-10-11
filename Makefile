@@ -1,7 +1,7 @@
 COMPOSE ?= docker-compose
 PYTEST_ARGS ?=
 
-.PHONY: build test unit lint shell certs clean
+.PHONY: build test unit lint shell certs demo clean
 
 build:
 	$(COMPOSE) build app
@@ -20,6 +20,9 @@ shell:
 
 certs:
 	$(COMPOSE) run --rm app sh scripts/gen_test_certs.sh
+
+demo:
+	$(COMPOSE) run --rm app python -m quantum_tool roadmap -c config/scan_config.docker.yml
 
 clean:
 	$(COMPOSE) down

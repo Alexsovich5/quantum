@@ -1,0 +1,19 @@
+# Scan configuration for the simulated nginx endpoints on the compose network.
+targets:
+  - tls-rsa
+  - tls-ecdsa
+  - tls-legacy
+
+ports:
+  - 443
+
+timeout: 5
+max_workers: 3
+max_hosts: 16
+enumerate_ciphers: true
+# Self-signed test certificates and keys served by the nginx containers.
+cert_paths:
+  - tests/fixtures/tls
+output_format: both
+output_path: reports/
+bench_iterations: 5

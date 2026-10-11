@@ -6,3 +6,4 @@ pycparser==2.20
 six==1.15.0
 Jinja2==2.11.2
 MarkupSafe==1.1.1
+click==7.1.2

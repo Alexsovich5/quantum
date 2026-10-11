@@ -13,5 +13,7 @@ setup(
         "pyOpenSSL==19.1.0",
         "PyYAML==5.3.1",
         "Jinja2==2.11.2",
+        "click==7.1.2",
     ],
+    entry_points={"console_scripts": ["quantum=quantum_tool.cli:main"]},
 )
