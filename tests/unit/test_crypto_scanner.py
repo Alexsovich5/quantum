@@ -1,6 +1,8 @@
-"""Characterisation tests for the scanner as it behaves before refactoring."""
+"""Behaviour tests for CryptoScanner.scan_host and report generation."""
 
 import socket
+
+import pytest
 
 from quantum_tool.crypto_scanner import CryptoScanner
 
@@ -49,14 +51,31 @@ def test_ecdhe_rsa_suite_yields_ecdh_rsa_and_two_critical_findings():
     ]
 
 
-def test_tls13_suite_name_has_no_recognised_algorithms():
+def test_tls13_suite_is_ecdh_with_certificate_auth():
     fake = FakeSSLSocket(cipher=("TLS_AES_256_GCM_SHA384", "TLSv1.3", 256), version="TLSv1.3")
     with fake_connection(fake):
         result = make_scanner().scan_host("192.0.2.10", 443)
 
-    assert result["key_exchange"] == "unknown"
-    assert result["auth_algorithm"] == "unknown"
-    assert result["vulnerabilities"] == []
+    assert result["key_exchange"] == "ECDH"
+    assert result["auth_algorithm"] == "cert"
+    assert result["vulnerabilities"] == [
+        {"type": "key_exchange", "algorithm": "ECDH", "threat_level": "critical",
+         "recommendation": "Migrate to CRYSTALS-Kyber"},
+    ]
+
+
+@pytest.mark.parametrize("suite,kex,auth", [
+    ("DHE-RSA-AES128-SHA", "DH", "RSA"),
+    ("AES128-SHA", "RSA", "RSA"),
+    ("ECDHE-ECDSA-AES256-GCM-SHA384", "ECDH", "ECDSA"),
+    ("PSK-AES128-CBC-SHA", "PSK", "PSK"),
+])
+def test_scanner_delegates_suite_parsing(suite, kex, auth):
+    fake = FakeSSLSocket(cipher=(suite, "TLSv1.2", 128))
+    with fake_connection(fake):
+        result = make_scanner().scan_host("192.0.2.10", 443)
+
+    assert (result["key_exchange"], result["auth_algorithm"]) == (kex, auth)
 
 
 def test_missing_cipher_and_certificate_fall_back_to_defaults():

@@ -12,6 +12,7 @@ import logging
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
+from quantum_tool.cipher_suites import parse_suite
 from quantum_tool.config import DEFAULTS, expand_targets
 
 logger = logging.getLogger('crypto_scanner')
@@ -94,24 +95,12 @@ class CryptoScanner:
     def _extract_key_exchange(self, cipher):
         if not cipher:
             return 'unknown'
-        name = cipher[0]
-        if 'ECDH' in name:
-            return 'ECDH'
-        elif 'DHE' in name or 'DH' in name:
-            return 'DH'
-        elif 'RSA' in name:
-            return 'RSA'
-        return 'unknown'
+        return parse_suite(cipher[0])['kex']
 
     def _extract_auth(self, cipher):
         if not cipher:
             return 'unknown'
-        name = cipher[0]
-        if 'ECDSA' in name:
-            return 'ECDSA'
-        elif 'RSA' in name:
-            return 'RSA'
-        return 'unknown'
+        return parse_suite(cipher[0])['auth']
 
     def _analyze_cert(self, cert_binary):
         """Basic certificate analysis."""
