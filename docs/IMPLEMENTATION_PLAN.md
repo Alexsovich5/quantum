@@ -463,6 +463,8 @@ benchmark figures.
   grouping targets by (component, algorithm), ordered by max risk then threat class
   (`shor` before `classical` before `grover`) then target count; each Shor phase carries a hybrid
   note ("keep ECDHE/RSA alongside Kyber/Dilithium until PQC TLS is standardised").
+  Phases also record `component`, `threat_class` and `alternative`; an optional `now` fixes
+  `generated_at` for tests.
 - create `tests/unit/test_migration_engine.py`
 
 **Tests to write first:** given hand-built assessments, phases are ordered by risk; targets that

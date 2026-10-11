@@ -199,7 +199,8 @@ Finding = {
 Assessment = { target, findings: [Finding], risk_score: int 0..100 }
 BenchResult = { algorithm, kind: "kem"|"sig", public_key_len, secret_key_len,
                 ciphertext_len|signature_len, keygen_ms, encap_ms|sign_ms, decap_ms|verify_ms }
-Roadmap = { generated_at, phases: [ { priority: int, algorithm, replacement, hybrid,
+Roadmap = { generated_at, phases: [ { priority: int, component, algorithm, threat_class,
+            replacement, alternative: str|None, hybrid: str|None,
             targets: [str], max_risk: int, bench: BenchResult|None } ] }
 ```
 
@@ -229,7 +230,7 @@ algorithms.lattice_based.KyberKEM(level=512|768|1024)            # keypair/encap
 algorithms.lattice_based.DilithiumSigner(level=2|3|4)            # keypair/sign/verify
 algorithms.hash_based.SphincsSigner(variant="128f"|"128s")       # keypair/sign/verify
 algorithms.benchmark.run(names: list[str], iterations: int) -> list[BenchResult]
-migration_engine.build_roadmap(assessments, bench=None) -> Roadmap
+migration_engine.build_roadmap(assessments, bench=None, now=None) -> Roadmap
 report.write_json(report, dir) -> path
 report.write_markdown(roadmap, report, dir) -> path
 ```
