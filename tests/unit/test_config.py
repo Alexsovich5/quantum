@@ -181,3 +181,43 @@ def test_scan_all_scans_each_expanded_address_not_the_cidr_string():
 
 def test_scan_all_uses_default_max_hosts():
     assert CryptoScanner({}).max_hosts == config.DEFAULTS["max_hosts"]
+
+
+@pytest.mark.parametrize("value", [".nan", ".inf", "-.inf", "301"])
+def test_timeout_must_be_finite_and_bounded(tmp_path, value):
+    with pytest.raises(ConfigError, match="timeout"):
+        load_config(write_yaml(tmp_path, "timeout: {}\n".format(value)))
+
+
+def test_duplicate_yaml_keys_are_rejected_not_last_one_wins(tmp_path):
+    path = write_yaml(tmp_path, "targets: [192.0.2.1]\ntimeout: 5\ntargets: [192.0.2.2]\n")
+
+    with pytest.raises(ConfigError, match="duplicate key 'targets'"):
+        load_config(path)
+
+
+@pytest.mark.parametrize("target", [
+    "", " ", "bad host", "a..b", "x" * 64 + ".example", "host\nname", "-lead.example",
+    "exämple.org", "a." * 127 + "ab", "192.0.2.10:443",
+])
+def test_malformed_targets_are_rejected(target):
+    with pytest.raises(ConfigError, match="target"):
+        validate({"targets": [target]})
+
+
+@pytest.mark.parametrize("target", [
+    "tls-rsa", "example.org", "example.org.", "192.0.2.10", "2001:db8::1", "10.0.1.0/24",
+    "compose_service",
+])
+def test_wellformed_targets_are_accepted(target):
+    assert validate({"targets": [target]})["targets"] == [target]
+
+
+def test_duplicate_ports_are_rejected():
+    with pytest.raises(ConfigError, match="ports"):
+        validate({"ports": [443, 443]})
+
+
+def test_bench_iterations_upper_bound():
+    with pytest.raises(ConfigError, match="bench_iterations"):
+        validate({"bench_iterations": 10 ** 6})

@@ -79,3 +79,60 @@ def tls_server():
     yield start
     for server in servers:
         server.stop()
+
+
+class TricklingServer:
+    """Answers every connection with a TLS record header announcing 16 KiB, then one byte
+    every ``interval`` seconds, so a client relying on per-read timeouts never gives up."""
+
+    HEADER = b"\x16\x03\x03\x40\x00"
+
+    def __init__(self, interval=0.1):
+        self.interval = interval
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(16)
+        self.listener.settimeout(0.2)
+        self.host, self.port = self.listener.getsockname()
+        self._stop = threading.Event()
+        self._threads = [threading.Thread(target=self._serve, daemon=True)]
+
+    def start(self):
+        self._threads[0].start()
+        return self
+
+    def stop(self):
+        self._stop.set()
+        for thread in list(self._threads):
+            thread.join(timeout=5)
+        self.listener.close()
+
+    def _serve(self):
+        while not self._stop.is_set():
+            try:
+                conn, _ = self.listener.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            worker = threading.Thread(target=self._trickle, args=(conn,), daemon=True)
+            self._threads.append(worker)
+            worker.start()
+
+    def _trickle(self, conn):
+        try:
+            conn.sendall(self.HEADER)
+            while not self._stop.wait(self.interval):
+                conn.sendall(b"\x00")
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+
+@pytest.fixture
+def trickling_server():
+    server = TricklingServer().start()
+    yield server
+    server.stop()

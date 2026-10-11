@@ -173,3 +173,16 @@ def test_roadmap_does_not_mutate_input():
 def test_generated_at_defaults_to_current_utc_time():
     stamp = me.build_roadmap([])["generated_at"]
     assert datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_unclassified_suites_get_a_review_phase_after_known_threats():
+    roadmap = me.build_roadmap([
+        assessment("a:443", 15, ("cipher_suite", "NOT-A-SUITE", "unknown", "high")),
+        assessment("b:443", 15, ("cipher", "AES-128", "grover", "medium")),
+    ], now=NOW)
+
+    assert keys(roadmap) == [("cipher", "AES-128"), ("cipher_suite", "NOT-A-SUITE")]
+    review = roadmap["phases"][1]
+    assert review["threat_class"] == "unknown"
+    assert review["replacement"] == "see roadmap"
+    assert review["hybrid"] is None

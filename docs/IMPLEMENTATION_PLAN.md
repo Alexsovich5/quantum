@@ -631,3 +631,90 @@ a layout tree generated from the tracked files and a path check script.
   `PYTHONPATH=/app/src` and the CLI runs as `python -m quantum_tool`.
 - **Time-dependent certificate checks** — `risk_score` / `assess_*` take `now`; tests fix it.
 - **Timing-based benchmark tests** — only assert positive timings, never absolute speeds.
+
+---
+
+## T16 — Security and hygiene hardening
+
+**Goal:** Review the whole repository for security, fail-open and hygiene problems and fix them,
+including the batch-wide required items for this repo (published ports, bounded work, strict
+parsing, fail closed, no secret leaks, exact-match lookups, escaping, ambiguity needs an admin).
+
+**Found and changed**
+- **Unassessed endpoints passed the `--fail-on` gate (fail open).** `no_tls` endpoints (which
+  include TLS 1.0/1.1-only servers) were dropped from the report without a count, and a scan in
+  which every endpoint was unreachable exited 0 with a roadmap saying no vulnerable algorithms
+  were found. The report now carries `no_tls`, `errors` and an `unassessed` list; the CLI always
+  warns about them, and with `--fail-on` exits 1 when anything answered but was not assessed, a
+  certificate file could not be read, or nothing was assessed. The Markdown roadmap lists the
+  unassessed endpoints and says the assessment is incomplete instead of claiming safety.
+- **Unclassified cipher suites scored as safe.** A name the parser could not decompose gave no
+  findings and risk 0. Two suites the scanner itself can negotiate (`ECDHE-ARIA128-GCM-SHA256`,
+  `ECDHE-ARIA256-GCM-SHA384`) hit this. The parser now knows OpenSSL's `ECDHE-ARIA…` spelling,
+  a test checks every candidate suite of the local OpenSSL is classified, and any remaining
+  unparsable suite gives an `unknown` / `high` finding (15 points, its own review phase in the
+  roadmap).
+- **One bad endpoint aborted the whole scan; config accepted values that crashed it.** An
+  exception in any worker (for example `UnicodeError` from `encode('idna')` on a malformed host
+  name) propagated out of `scan_all`. Each endpoint is now isolated (`status: error`, counted),
+  submission is bounded to `2 * max_workers` queued endpoints, and the config rejects malformed
+  targets, NaN/infinite or > 300 s timeouts, repeated ports, `bench_iterations` > 10000 and
+  duplicate YAML keys (PyYAML otherwise keeps the last one silently).
+- **pyOpenSSL enumeration handshakes had only a per-read timeout.** A server trickling one byte
+  per read kept the scan open indefinitely. `_handshake` now enforces one deadline for the whole
+  handshake. (The stdlib `ssl` handshake already applies its timeout to the whole handshake; tests
+  cover all three handshake paths against a trickling server.)
+- **Certificate inventory could hang or exhaust memory.** A FIFO named `*.pem` blocked `open()`
+  forever and every file was read whole. Files are opened non-blocking, must be regular files of
+  at most 4 MiB, and unreadable files/directories (including `os.walk` errors, previously ignored)
+  are returned as `unreadable` and reported; an explicitly named unreadable file is an error
+  (exit 2) instead of a traceback.
+- **`roadmap --from-json` trusted the file.** Invalid JSON raised a traceback, a structure without
+  `results` silently gave an empty "safe" roadmap, and `assessments` were taken as-is.
+  `report.read_json` refuses non-regular files (a FIFO blocked `open()`), caps the size (50 MiB),
+  rejects invalid JSON, duplicate keys, NaN/Infinity and
+  non-report structures (exit 2), and recomputes totals, summary and assessments from `results`.
+- **Markdown injection.** File paths and host names were rendered unescaped into Markdown tables;
+  a `|` broke the table and `<…>` passed HTML through. Every rendered value is now escaped via
+  the Jinja2 `finalize` hook.
+- **Report write errors** (unwritable output directory) now exit 2 with a message, not a traceback.
+- **Published ports check (required item 33).** `scripts/check_ports.py` and `make ports-check`
+  fail if the rendered compose config publishes a port beyond `127.0.0.1` (short and long syntax)
+  or uses `network_mode: host`; a unit test runs it on `docker-compose.yml`. The stack publishes
+  no ports.
+- **apt sources over HTTPS.** The snapshot sources used `http://`; they now use `https://`
+  (signature checking was and stays on), and a test fails on `http://` or any unauthenticated-
+  install option in the Dockerfile.
+- `make lint` also checks `scripts/`.
+
+**Checked, no change needed**
+- No credentials, tokens or connection URLs exist in the tool; KeyInfo never carries key material
+  and errors name only paths. Committed keys under `tests/fixtures/tls/` are documented test-only
+  material served by the local nginx containers.
+- No user accounts, directory or IdP integration, so the "ambiguity requires an authenticated
+  admin" rule has nothing to apply to; no HTTP endpoints, so no CSRF/auth surface.
+- Name lookups that select work (`bench --alg`, Kyber/Dilithium/SPHINCS+ levels) are exact-match.
+- No era-performing comments, @author tags, AI mentions or debug leftovers were found.
+
+**Not changed:** a peer certificate that cannot be parsed still yields `certificate: None`; the
+endpoint is scored from its suites only (listed in the README limitations).
+
+**Tests to write first:** `test_config.py` (NaN/inf/301 timeouts, duplicate keys, malformed and
+well-formed targets, repeated ports, iterations cap); `test_cipher_suites.py` (ARIA cases, every
+local candidate classified); `test_vulnerability_assessor.py` / `test_migration_engine.py`
+(`unknown` finding, score and phase); `test_crypto_scanner.py` (trickling server against all three
+handshake paths, error isolation, `no_tls` counts, bounded submission keeps order);
+`test_certificate_manager.py` (FIFO, oversized file, non-regular `load_file`); `test_report.py`
+(escaping, unassessed section, incomplete wording, `read_json` validation and recomputation);
+`test_cli.py` (fail-on with `no_tls`, all unreachable, unreadable files, malformed `--from-json`,
+recomputed assessments); `test_container_config.py` (ports check, Dockerfile apt sources).
+
+**Acceptance:** `make build && make test && make lint && make ports-check && docker-compose run --rm app python scripts/check_readme.py`
+
+**Commit message**
+```
+Fail closed on unassessed endpoints and harden input handling
+
+Report and gate on endpoints that could not be assessed, flag unclassified
+suites, bound handshakes and file reads, validate config and JSON reports.
+```

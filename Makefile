@@ -1,7 +1,7 @@
 COMPOSE ?= docker-compose
 PYTEST_ARGS ?=
 
-.PHONY: build test unit lint shell certs demo clean
+.PHONY: build test unit lint ports-check shell certs demo clean
 
 build:
 	$(COMPOSE) build app
@@ -13,7 +13,11 @@ unit:
 	$(COMPOSE) run --rm --no-deps app pytest -m "not integration" $(PYTEST_ARGS)
 
 lint:
-	$(COMPOSE) run --rm --no-deps app flake8 src tests
+	$(COMPOSE) run --rm --no-deps app flake8 src tests scripts
+
+# Fails if the rendered compose config publishes any port beyond 127.0.0.1.
+ports-check:
+	$(COMPOSE) config | $(COMPOSE) run --rm -T --no-deps app python scripts/check_ports.py -
 
 shell:
 	$(COMPOSE) run --rm app bash

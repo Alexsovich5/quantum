@@ -24,6 +24,8 @@ PREFIXES = {
     'ECDHE-RSA': ('ECDH', 'RSA'),
     'ECDH-ECDSA': ('ECDH', 'ECDSA'),
     'ECDH-RSA': ('ECDH', 'RSA'),
+    # OpenSSL names the ECDHE-RSA ARIA suites ECDHE-ARIA128-GCM-SHA256 and so on.
+    'ECDHE': ('ECDH', 'RSA'),
     'DHE-RSA': ('DH', 'RSA'),
     'DHE-DSS': ('DH', 'DSS'),
     'EDH-RSA': ('DH', 'RSA'),

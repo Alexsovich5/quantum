@@ -2,12 +2,16 @@
 Command line entry point: ``scan``, ``certs``, ``bench`` and ``roadmap``.
 
 Options and exit codes follow docs/SPEC.md section 5.5: 0 on success, 1 when
-``--fail-on LEVEL`` finds a finding at or above LEVEL, 2 on a configuration
-or usage error. Findings with threat class ``none`` (no change required)
-never trigger ``--fail-on``.
+``--fail-on LEVEL`` finds a finding at or above LEVEL or the assessment is
+incomplete, 2 on a configuration or usage error. Findings with threat class
+``none`` (no change required) never trigger ``--fail-on``.
+
+Incomplete means: an endpoint answered but was not assessed (``no_tls`` or
+``error``), a certificate/key file could not be read, or nothing at all was
+assessed. Each case is always printed to stderr; with ``--fail-on`` it also
+fails the run, so a broken scan cannot pass a CI gate.
 """
 
-import json
 import logging
 import os
 import sys
@@ -19,8 +23,7 @@ from quantum_tool import certificate_manager, report as report_writer
 from quantum_tool.config import ConfigError, DEFAULTS, load_config
 from quantum_tool.crypto_scanner import CryptoScanner
 from quantum_tool.migration_engine import build_roadmap
-from quantum_tool.vulnerability_assessor import (assess_certificate, assess_endpoint,
-                                                 assess_key)
+from quantum_tool.vulnerability_assessor import assess_certificate, assess_key
 
 DEFAULT_CONFIG = os.path.join('config', 'scan_config.yml')
 LEVELS = ('critical', 'high', 'medium', 'low')
@@ -78,9 +81,30 @@ def _format_is_explicit(path):
     return isinstance(raw, dict) and 'output_format' in raw
 
 
-def _finish(ctx, assessments, fail_on):
+def coverage_problems(assessments, report=None, unreadable=()):
+    """Reasons the assessment is incomplete; [] when everything was assessed."""
+    problems = []
+    report = report or {}
+    if report.get('no_tls'):
+        problems.append('{} endpoint(s) accepted TCP but completed no TLS 1.2+ handshake'
+                        .format(report['no_tls']))
+    if report.get('errors'):
+        problems.append('{} endpoint(s) failed during the scan'.format(report['errors']))
+    for item in unreadable:
+        problems.append('cannot read {}: {}'.format(item['path'], item['reason']))
+    if not assessments:
+        problems.append('nothing was assessed')
+    return problems
+
+
+def _finish(ctx, assessments, fail_on, problems=()):
+    for problem in problems:
+        click.echo('warning: {} (not assessed)'.format(problem), err=True)
     if threshold_reached(assessments, fail_on):
         click.echo('findings at or above {} found'.format(fail_on), err=True)
+        ctx.exit(1)
+    if fail_on and problems:
+        click.echo('assessment incomplete; failing --fail-on {}'.format(fail_on), err=True)
         ctx.exit(1)
 
 
@@ -92,8 +116,12 @@ def _run_scan(ctx, cfg):
 
 
 def _inventory(paths):
-    """Certificates and keys from each path (directory scanned recursively, or one file)."""
-    certificates, keys, seen = [], [], set()
+    """Certificates, keys and unreadable entries from each path.
+
+    A directory is scanned recursively; a file named directly must be readable
+    and hold a certificate or key (OSError / ValueError otherwise).
+    """
+    certificates, keys, unreadable, seen = [], [], [], set()
     for path in paths:
         if os.path.isdir(path):
             found = certificate_manager.scan_directory(path)
@@ -104,13 +132,21 @@ def _inventory(paths):
                 seen.add(cert['fingerprint_sha256'])
                 certificates.append(cert)
         keys.extend(found['keys'])
-    return certificates, keys
+        unreadable.extend(found.get('unreadable') or [])
+    return certificates, keys, unreadable
 
 
 def _file_assessments(paths):
-    certificates, keys = _inventory(paths)
+    certificates, keys, unreadable = _inventory(paths)
     return ([assess_certificate(c) for c in certificates]
-            + [assess_key(k) for k in keys])
+            + [assess_key(k) for k in keys]), unreadable
+
+
+def _file_error(exc):
+    """One-line message for a file error: path and reason, no traceback."""
+    if isinstance(exc, OSError) and exc.filename is not None:
+        return '{}: {}'.format(exc.filename, exc.strerror or exc)
+    return str(exc)
 
 
 def _print_endpoints(report):
@@ -128,6 +164,15 @@ def _print_endpoints(report):
 def _print_paths(paths):
     for path in paths:
         click.echo('wrote {}'.format(path))
+
+
+def _write(ctx, result, roadmap, directory, fmt):
+    try:
+        paths = report_writer.write_outputs(result, roadmap, directory, fmt)
+    except OSError as exc:
+        click.echo('error: cannot write reports: {}'.format(_file_error(exc)), err=True)
+        ctx.exit(2)
+    _print_paths(paths)
 
 
 def _bench_table(results):
@@ -187,9 +232,9 @@ def scan(ctx, config_path, no_enum, output_dir, fail_on, verbose):
     result = _run_scan(ctx, cfg)
     roadmap = build_roadmap(result['assessments'])
     _print_endpoints(result)
-    _print_paths(report_writer.write_outputs(
-        result, roadmap, output_dir or cfg['output_path'], cfg['output_format']))
-    _finish(ctx, result['assessments'], fail_on)
+    _write(ctx, result, roadmap, output_dir or cfg['output_path'], cfg['output_format'])
+    _finish(ctx, result['assessments'], fail_on,
+            coverage_problems(result['assessments'], report=result))
 
 
 @main.command()
@@ -204,9 +249,9 @@ def certs(ctx, config_path, fail_on, verbose, paths):
     if not paths:
         paths = _load(ctx, config_path)['cert_paths']
     try:
-        certificates, keys = _inventory(paths)
-    except ValueError as exc:
-        click.echo('error: {}'.format(exc), err=True)
+        certificates, keys, unreadable = _inventory(paths)
+    except (OSError, ValueError) as exc:
+        click.echo('error: {}'.format(_file_error(exc)), err=True)
         ctx.exit(2)
 
     assessments = []
@@ -225,7 +270,7 @@ def certs(ctx, config_path, fail_on, verbose, paths):
         click.echo('key         {:<50} {:<18} {:<8} risk {:>3}  {}'.format(
             item['source'], key, '-', assessment['risk_score'], highest_level(assessment)))
     click.echo('{} certificate(s), {} key(s)'.format(len(certificates), len(keys)))
-    _finish(ctx, assessments, fail_on)
+    _finish(ctx, assessments, fail_on, coverage_problems(assessments, unreadable=unreadable))
 
 
 @main.command()
@@ -259,19 +304,20 @@ def roadmap(ctx, config_path, from_json, no_enum, output_dir, fail_on, verbose):
         cfg['enumerate_ciphers'] = False
 
     if from_json:
-        with open(from_json) as handle:
-            result = json.load(handle)
-        result.pop('roadmap', None)
-        if 'assessments' not in result:
-            result['assessments'] = [assess_endpoint(r) for r in result.get('results') or []]
+        try:
+            result = report_writer.read_json(from_json)
+        except (OSError, ValueError) as exc:
+            click.echo('error: {} is not a usable scan report: {}'.format(
+                from_json, _file_error(exc)), err=True)
+            ctx.exit(2)
     else:
         result = _run_scan(ctx, cfg)
 
     try:
-        result['assessments'] = list(result['assessments']) + _file_assessments(
-            cfg['cert_paths'])
+        file_assessments, unreadable = _file_assessments(cfg['cert_paths'])
     except (OSError, ValueError) as exc:
-        _config_error(ctx, exc)
+        _config_error(ctx, _file_error(exc))
+    result['assessments'] = list(result['assessments']) + file_assessments
 
     plan = build_roadmap(result['assessments'],
                          bench=_bench(ctx, None, cfg['bench_iterations']))
@@ -280,9 +326,9 @@ def roadmap(ctx, config_path, from_json, no_enum, output_dir, fail_on, verbose):
         fmt = 'both'
     _print_endpoints(result)
     click.echo('{} migration phase(s)'.format(len(plan['phases'])))
-    _print_paths(report_writer.write_outputs(
-        result, plan, output_dir or cfg['output_path'], fmt))
-    _finish(ctx, result['assessments'], fail_on)
+    _write(ctx, result, plan, output_dir or cfg['output_path'], fmt)
+    _finish(ctx, result['assessments'], fail_on,
+            coverage_problems(result['assessments'], report=result, unreadable=unreadable))
 
 
 if __name__ == '__main__':  # pragma: no cover

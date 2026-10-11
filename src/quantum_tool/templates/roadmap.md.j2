@@ -11,6 +11,8 @@ Scan date: {{ report.scan_date }}
 | Vulnerable endpoints | {{ report.vulnerable_endpoints }} |
 | Risk percentage | {{ report.risk_percentage }}% |
 | Unreachable | {{ report.unreachable | default(0) }} |
+| Not assessed (no TLS 1.2+ handshake) | {{ report.no_tls | default(0) }} |
+| Scan errors | {{ report.errors | default(0) }} |
 | Critical findings | {{ summary.critical | default(0) }} |
 | Quantum-safe endpoints | {{ summary.quantum_safe | default(0) }} |
 
@@ -24,6 +26,20 @@ Scan date: {{ report.scan_date }}
 {% endfor %}
 {% else %}
 No endpoints completed a TLS handshake.
+{% endif %}
+{% if unassessed %}
+
+## Not assessed
+
+These endpoints answered on TCP but were not assessed: `no_tls` completed no TLS 1.2+
+handshake (plain-text service or a server limited to TLS 1.0/1.1), `error` failed during the
+scan. Their cryptography is unknown, not safe.
+
+| Endpoint | Status |
+|---|---|
+{% for item in unassessed %}
+| {{ item.host }}:{{ item.port }} | {{ item.status }} |
+{% endfor %}
 {% endif %}
 
 {% if phases %}
@@ -45,6 +61,10 @@ No endpoints completed a TLS handshake.
 {% endif %}
 
 {% endfor %}
+{% elif incomplete %}
+No migration phases, but the assessment is incomplete: nothing was assessed, or some endpoints
+could not be assessed (see above). The absence of findings does not mean the cryptography is safe.
+
 {% else %}
 No migration phases: no quantum-vulnerable or weak algorithms were found.
 

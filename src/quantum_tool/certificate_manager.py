@@ -6,9 +6,11 @@ KeyInfo records as described in docs/SPEC.md section 5.2. A KeyInfo carries
 only the key's type, size, curve and source path, never key material.
 """
 
+import errno
 import logging
 import os
 import re
+import stat
 
 from cryptography import x509
 from cryptography.exceptions import UnsupportedAlgorithm
@@ -19,6 +21,8 @@ from cryptography.hazmat.primitives.asymmetric import dsa, ec, ed448, ed25519, r
 logger = logging.getLogger('certificate_manager')
 
 FILE_EXTENSIONS = ('.pem', '.crt', '.cer', '.der', '.key')
+# Larger than any certificate bundle or key file the inventory expects.
+MAX_FILE_BYTES = 4 * 1024 * 1024
 
 PEM_BLOCK = re.compile(
     rb'-----BEGIN ([A-Z0-9 ]+)-----\r?\n.*?-----END \1-----', re.DOTALL)
@@ -106,15 +110,46 @@ def parse_private_key(data, source):
     return {'source': source, 'key_type': key_type, 'key_bits': key_bits, 'curve': curve}
 
 
+class UnreadableFile(OSError):
+    """A path that is not a regular file or is larger than MAX_FILE_BYTES."""
+
+
+def read_regular_file(path, limit=None):
+    """Return the bytes of a regular file of at most ``limit`` bytes.
+
+    The file is opened non-blocking so a FIFO or device cannot stall the
+    inventory, and its type and size are checked on the open descriptor.
+    Raises OSError (UnreadableFile for the type and size checks).
+    """
+    limit = MAX_FILE_BYTES if limit is None else limit
+    flags = os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_NOCTTY', 0)
+    fd = os.open(path, flags)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise UnreadableFile(errno.EINVAL, 'not a regular file', path)
+        if info.st_size > limit:
+            raise UnreadableFile(errno.EFBIG, 'larger than %d bytes' % limit, path)
+        with os.fdopen(fd, 'rb') as fh:
+            fd = None
+            data = fh.read(limit + 1)
+    finally:
+        if fd is not None:
+            os.close(fd)
+    if len(data) > limit:
+        raise UnreadableFile(errno.EFBIG, 'larger than %d bytes' % limit, path)
+    return data
+
+
 def load_file(path):
     """Parse every certificate and private key in one file.
 
     PEM files may hold several blocks (for example a certificate followed by
     its key); blocks of other types are ignored. DER files hold one object.
-    Raises ValueError if the file contains no certificate or private key.
+    Raises ValueError if the file contains no certificate or private key and
+    OSError if it cannot be read (see ``read_regular_file``).
     """
-    with open(path, 'rb') as fh:
-        data = fh.read()
+    data = read_regular_file(path)
 
     result = {'certificates': [], 'keys': []}
     if _is_pem(data):
@@ -141,9 +176,17 @@ def load_file(path):
     return result
 
 
-def _candidate_files(path):
+def _reason(exc):
+    return exc.strerror or str(exc) or type(exc).__name__
+
+
+def _candidate_files(path, unreadable):
     found = []
-    for root, _dirs, files in os.walk(path):
+
+    def walk_error(exc):
+        unreadable.append({'path': exc.filename, 'reason': _reason(exc)})
+
+    for root, _dirs, files in os.walk(path, onerror=walk_error):
         for name in files:
             if name.lower().endswith(FILE_EXTENSIONS):
                 found.append(os.path.join(root, name))
@@ -154,17 +197,24 @@ def scan_directory(path):
     """Inventory certificate and key files below path, recursively.
 
     Files are visited in sorted path order. Certificates are deduplicated by
-    SHA-256 fingerprint, keeping the first file as source. Unparsable files
-    are skipped with a warning.
+    SHA-256 fingerprint, keeping the first file as source. Files holding no
+    certificate or key are skipped with a warning. Files and directories that
+    cannot be read (permissions, FIFOs and devices, files over MAX_FILE_BYTES)
+    are listed under ``unreadable`` with a reason, so callers can tell an
+    incomplete inventory from a clean one.
     """
     if not os.path.isdir(path):
         raise ValueError('not a directory: %s' % path)
 
-    certificates, keys, seen = [], [], set()
-    for file_path in _candidate_files(path):
+    certificates, keys, seen, unreadable = [], [], set(), []
+    for file_path in _candidate_files(path, unreadable):
         try:
             found = load_file(file_path)
-        except (OSError, ValueError) as exc:
+        except OSError as exc:
+            logger.warning("Cannot read %s: %s", file_path, _reason(exc))
+            unreadable.append({'path': file_path, 'reason': _reason(exc)})
+            continue
+        except ValueError as exc:
             logger.warning("Skipping %s: %s", file_path, exc)
             continue
         for cert in found['certificates']:
@@ -173,4 +223,4 @@ def scan_directory(path):
                 certificates.append(cert)
         keys.extend(found['keys'])
 
-    return {'certificates': certificates, 'keys': keys}
+    return {'certificates': certificates, 'keys': keys, 'unreadable': unreadable}

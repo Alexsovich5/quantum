@@ -32,8 +32,11 @@ The tool answers these four questions from a YAML config and writes JSON and Mar
 2. **Threaded TLS scanner** (existing `CryptoScanner`, refactored) — connects to every
    host×port with a `ThreadPoolExecutor`, records negotiated protocol, cipher suite, key bits and
    the peer certificate (DER). Unreachable endpoints are recorded with a `status` of
-   `unreachable`, and endpoints that accept TCP but complete no TLS 1.2+ handshake with `no_tls`,
-   rather than being dropped silently.
+   `unreachable`, endpoints that accept TCP but complete no TLS 1.2+ handshake with `no_tls`, and
+   endpoints whose scan raised an unexpected error with `error`, rather than being dropped
+   silently or aborting the scan. `timeout` bounds the TCP connect and, separately, the whole
+   TLS handshake (not each read), so a server that trickles bytes cannot stall the scan; at most
+   `2 * max_workers` endpoints are queued at a time.
 3. **Cipher-suite enumeration** — using pyOpenSSL, the scanner builds the candidate list from
    `SSL.Context(SSL.TLSv1_2_METHOD)` with
    `ALL:COMPLEMENTOFALL:!PSK:!SRP:!aNULL:@SECLEVEL=0`, then attempts one TLS 1.2 handshake per
@@ -139,20 +142,21 @@ configured with a different certificate / cipher policy.
 ### 5.1 Configuration (`config/scan_config.yml`)
 
 ```yaml
-targets:            # list[str]  hostnames, IPs or CIDR blocks
+targets:            # list[str]  ASCII host names (RFC 1123, "_" allowed), IPs or CIDR blocks
   - 10.0.1.0/24
-ports: [443, 8443, 993, 995]   # list[int] 1..65535
-timeout: 10         # float seconds, > 0
+ports: [443, 8443, 993, 995]   # list[int] 1..65535, no repeats
+timeout: 10         # finite float seconds, 0 < timeout <= 300
 max_workers: 20     # int 1..256
 max_hosts: 1024     # int, refuse larger CIDR expansion
 enumerate_ciphers: true        # bool, run pyOpenSSL per-cipher probing
 cert_paths: []      # list[str] directories scanned recursively for *.pem/*.crt/*.cer/*.der/*.key
 output_format: json # json | markdown | both
 output_path: reports/
-bench_iterations: 20           # int, used by `bench` and `roadmap`
+bench_iterations: 20           # int 1..10000, used by `bench` and `roadmap`
 ```
 
-Unknown keys raise `ConfigError`; missing keys take the defaults above.
+Unknown keys and keys repeated within one mapping raise `ConfigError`; missing keys take the
+defaults above.
 
 `output_format` controls which files `scan` and `roadmap` write: `json` → only
 `scan-<ts>.json`; `markdown` → only `roadmap-<ts>.md`; `both` → both. `scan` builds a roadmap
@@ -163,7 +167,7 @@ key is left at its default. `certs` and `bench` print to stdout and write nothin
 
 ```
 Endpoint = {
-  host: str, port: int, status: "ok" | "unreachable" | "no_tls",
+  host: str, port: int, status: "ok" | "unreachable" | "no_tls" | "error",
   protocol: str|None,            # "TLSv1.2", "TLSv1.3"
   tls13: bool,
   negotiated_suite: str|None,
@@ -191,8 +195,8 @@ KeyInfo = {
 }
 Finding = {
   target: "host:port" | <file path>, component: "key_exchange"|"authentication"|
-          "cipher"|"mac"|"certificate_key"|"certificate_signature",
-  algorithm: str, threat_class: "shor"|"classical"|"grover"|"none",
+          "cipher"|"mac"|"certificate_key"|"certificate_signature"|"cipher_suite",
+  algorithm: str, threat_class: "shor"|"classical"|"grover"|"none"|"unknown",
   threat_level: "critical"|"high"|"medium"|"low",
   recommendation: str
 }
@@ -206,7 +210,12 @@ Roadmap = { generated_at, phases: [ { priority: int, component, algorithm, threa
 
 The top-level JSON report keeps the existing `_generate_report` keys (`scan_date`,
 `total_endpoints`, `vulnerable_endpoints`, `risk_percentage`, `results`, `summary`) and adds
-`unreachable`, `assessments` and `roadmap`.
+`unreachable`, `no_tls`, `errors`, `unassessed` (host, port and status of every `no_tls` /
+`error` endpoint), `assessments` and `roadmap`. The Markdown roadmap lists the unassessed
+endpoints and, when nothing or not everything was assessed, says the assessment is incomplete
+instead of "no vulnerable algorithms were found". Every value rendered into the Markdown is
+escaped (`\`, `|`, backticks, `<`, `>`, `&`, line breaks), since paths and host names come from
+the scanned environment.
 
 ### 5.3 Python interfaces
 
@@ -219,8 +228,11 @@ crypto_scanner.CryptoScanner(config).enumerate_ciphers(host, port) -> list[str]
 crypto_scanner.CryptoScanner(config).scan_all() -> dict          # report
 certificate_manager.parse_certificate(data: bytes, source="network") -> CertInfo
 certificate_manager.parse_private_key(data: bytes, source: str) -> KeyInfo
-certificate_manager.scan_directory(path: str) -> {"certificates": [CertInfo], "keys": [KeyInfo]}
-    # certificates deduplicated by fingerprint_sha256, first in sorted path order kept
+certificate_manager.scan_directory(path: str) -> {"certificates": [CertInfo], "keys": [KeyInfo],
+                                                  "unreadable": [{"path", "reason"}]}
+    # certificates deduplicated by fingerprint_sha256, first in sorted path order kept;
+    # files are opened non-blocking and must be regular files of at most 4 MiB, so FIFOs,
+    # devices and huge files are listed as unreadable instead of hanging or exhausting memory
 vulnerability_assessor.assess_endpoint(ep: Endpoint, now=None) -> Assessment
 vulnerability_assessor.assess_certificate(ci: CertInfo, now=None) -> Assessment
 vulnerability_assessor.assess_key(ki: KeyInfo) -> Assessment
@@ -233,6 +245,9 @@ algorithms.benchmark.run(names: list[str], iterations: int) -> list[BenchResult]
 migration_engine.build_roadmap(assessments, bench=None, now=None) -> Roadmap
 report.write_json(report, dir) -> path
 report.write_markdown(roadmap, report, dir) -> path
+report.read_json(path) -> report   # for --from-json; ValueError on non-regular files, files over 50 MiB, invalid
+    # JSON, duplicate keys, NaN/Infinity or a non-report structure; totals, summary and
+    # assessments are recomputed from "results", never trusted from the file
 ```
 
 ### 5.4 Risk score
@@ -249,6 +264,7 @@ suite and the certificate. Finding algorithms are normalised to the primitive, n
 | Each `classical` / `medium` finding (HMAC-SHA1 / HMAC-MD5 MAC in CBC suites) | 5 |
 | Each `grover` / `medium` finding (AES-128, CAMELLIA-128) | 5 |
 | `grover` / `low` and `none` findings (SHA-256; AES-256, CHACHA20, SHA-384+) | 0 |
+| Each `unknown` / `high` finding (a suite the parser cannot decompose) | 15 |
 | Certificate `not_after` more than 2 years after `now` (long-lived keys, store-now-decrypt-later) | 10 |
 
 `risk_score = min(100, sum)`. Threat mapping:
@@ -263,6 +279,7 @@ suite and the certificate. Finding algorithms are normalised to the primitive, n
 | AES-128, CAMELLIA-128 | grover | medium | AES-256-GCM |
 | SHA-256 | grover | low | SHA-384 |
 | AES-256, CHACHA20, SHA-384, SHA-512, SHA3-* | none | low | — |
+| Cipher suite the parser cannot decompose (component `cipher_suite`) | unknown | high | review manually; never treated as safe |
 
 Worked examples (fixed `now` = 2020-06-30T00:00:00Z, ten-year fixture certificates, suites as
 configured in §8, TLS 1.3 negotiating `TLS_AES_256_GCM_SHA384`):
@@ -287,8 +304,17 @@ quantum roadmap [-c CONFIG] [--from-json FILE] [--no-enum] [-o DIR] [--fail-on L
 ```
 
 `-o DIR` overrides `output_path`; `--fail-on LEVEL` (`critical|high|medium|low`) makes the
-command exit 1 when any finding is at or above that level; `-v` sets logging to DEBUG (default
-WARNING). Exit codes: 0 success, 1 `--fail-on` threshold reached, 2 config error.
+command exit 1 when any finding is at or above that level, or when the assessment is incomplete:
+an endpoint was `no_tls` or `error`, a certificate/key file could not be read, or nothing was
+assessed at all (unreachable ports alone do not count while something else was assessed). Each
+incomplete case is printed to stderr as a warning with or without `--fail-on`. `-v` sets logging
+to DEBUG (default WARNING). Exit codes: 0 success, 1 `--fail-on` threshold reached or assessment
+incomplete, 2 config, usage or file error (including an unusable `--from-json` report or an
+unwritable output directory).
+
+`make ports-check` pipes the rendered `docker-compose config` into `scripts/check_ports.py`,
+which fails if any service publishes a port on anything but `127.0.0.1` or uses
+`network_mode: host`; the compose file currently publishes no ports at all.
 
 ## 6. Stack & pinned versions
 
@@ -373,11 +399,12 @@ apt in the app image is pointed at the period snapshot, not the current archive,
 cmake/ninja cannot upgrade OpenSSL or other libraries to post-2020 builds:
 
 ```
-deb http://snapshot.debian.org/archive/debian/20200615T000000Z buster main
-deb http://snapshot.debian.org/archive/debian-security/20200615T000000Z buster/updates main
+deb https://snapshot.debian.org/archive/debian/20200615T000000Z buster main
+deb https://snapshot.debian.org/archive/debian-security/20200615T000000Z buster/updates main
 ```
 
-with `Acquire::Check-Valid-Until "false";`. Only `cmake ninja-build` are installed;
+with `Acquire::Check-Valid-Until "false";` (needed because the snapshot's Release files have
+expired; signature checking stays on, and no unauthenticated-install option is used). Only `cmake ninja-build` are installed;
 `libssl-dev` is already present in the base image (1.1.1d-0+deb10u3, the same version as the
 snapshot).
 

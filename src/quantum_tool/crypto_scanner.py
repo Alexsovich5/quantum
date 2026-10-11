@@ -7,12 +7,14 @@ migration recommendations.
 """
 
 import ipaddress
+import itertools
 import select
 import ssl
 import socket
 import logging
+import time
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 from OpenSSL import SSL
 
@@ -29,6 +31,9 @@ logger = logging.getLogger('crypto_scanner')
 # policy so weak suites such as 3DES can still be probed.
 CANDIDATE_CIPHERS = b"ALL:COMPLEMENTOFALL:!PSK:!SRP:!aNULL:@SECLEVEL=0"
 
+# Endpoints that answered on TCP but could not be assessed.
+UNASSESSED_STATUSES = ('no_tls', 'error')
+
 
 class CryptoScanner:
     """Scans network hosts for cryptographic implementations."""
@@ -42,29 +47,49 @@ class CryptoScanner:
         self.enumerate = config.get('enumerate_ciphers', DEFAULTS['enumerate_ciphers'])
 
     def scan_all(self):
-        """Scan all configured targets."""
+        """Scan all configured targets.
+
+        At most ``2 * max_workers`` endpoints are queued at a time, and an
+        unexpected error on one endpoint records it with ``status: error``
+        instead of aborting the whole scan. Results keep host-then-port order.
+        """
         hosts = expand_targets(self.targets, self.max_hosts)
         logger.info("Starting crypto scan on %d hosts from %d targets",
                     len(hosts), len(self.targets))
-        results = []
+        endpoints = itertools.product(hosts, self.ports)
+        results = {}
+        in_flight = {}
+        queue_limit = 2 * self.max_workers
+
+        def collect(futures):
+            for future in futures:
+                results[in_flight.pop(future)] = future.result()
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = []
-            for host in hosts:
-                for port in self.ports:
-                    futures.append(executor.submit(self.scan_host, host, port))
+            for index, (host, port) in enumerate(endpoints):
+                if len(in_flight) >= queue_limit:
+                    done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+                    collect(done)
+                in_flight[executor.submit(self._scan_endpoint, host, port)] = index
+            collect(list(in_flight))
 
-            for future in futures:
-                results.append(future.result())
+        return self._generate_report([results[i] for i in sorted(results)])
 
-        return self._generate_report(results)
+    def _scan_endpoint(self, host, port):
+        try:
+            return self.scan_host(host, port)
+        except Exception as exc:  # one endpoint must not abort the whole scan
+            logger.warning("Scan of %s:%d failed: %s: %s", host, port,
+                           type(exc).__name__, exc)
+            return self._failed_endpoint(host, port, 'error')
 
     def scan_host(self, host, port):
         """Scan a single host:port for TLS/crypto configuration.
 
         Returns the scan result with ``status: ok``, or an Endpoint with
         ``status: unreachable`` (TCP connect failed) or ``no_tls`` (TCP connected
-        but no TLS 1.2+ handshake completed). With ``enumerate_ciphers`` on,
+        but no TLS 1.2+ handshake completed). The stdlib handshake applies
+        ``timeout`` to the whole handshake, not to each read. With ``enumerate_ciphers`` on,
         ``offered_suites`` lists every TLS 1.2 suite the server accepts and
         ``tls13`` comes from a dedicated TLS 1.3-only handshake.
         """
@@ -158,16 +183,22 @@ class CryptoScanner:
             return accepted
 
     def _handshake(self, conn, sock):
-        """Drive a pyOpenSSL handshake on a socket that has a timeout set."""
+        """Drive a pyOpenSSL handshake on a socket that has a timeout set.
+
+        ``timeout`` bounds the whole handshake, not each read, so a server
+        that trickles bytes cannot hold the scan open.
+        """
+        deadline = time.monotonic() + self.timeout
         while True:
             try:
                 conn.do_handshake()
                 return
             except SSL.WantReadError:
-                ready = select.select([sock], [], [], self.timeout)[0]
+                readable, writable = [sock], []
             except SSL.WantWriteError:
-                ready = select.select([], [sock], [], self.timeout)[1]
-            if not ready:
+                readable, writable = [], [sock]
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not any(select.select(readable, writable, [], remaining)[:2]):
                 raise socket.timeout('TLS handshake timed out')
 
     def supports_tls13(self, host, port):
@@ -238,27 +269,42 @@ class CryptoScanner:
 
     def _generate_report(self, endpoints):
         """Generate scan summary report; totals cover only endpoints with a TLS session."""
-        results = [r for r in endpoints if r.get('status', 'ok') == 'ok']
-        unreachable = sum(1 for r in endpoints if r.get('status') == 'unreachable')
-        total = len(results)
-        vulnerable = sum(1 for r in results if r['vulnerabilities'])
+        return summarise(endpoints)
 
-        return {
-            'scan_date': datetime.utcnow().isoformat(),
-            'total_endpoints': total,
-            'vulnerable_endpoints': vulnerable,
-            'risk_percentage': round(vulnerable / total * 100, 1) if total else 0,
-            'unreachable': unreachable,
-            'results': results,
-            'assessments': [assess_endpoint(r) for r in results],
-            'summary': {
-                'critical': sum(
-                    1 for r in results for v in r['vulnerabilities']
-                    if v['threat_level'] == 'critical'
-                ),
-                'quantum_safe': total - vulnerable
-            }
+
+def summarise(endpoints, scan_date=None):
+    """Build the scan report from Endpoint records.
+
+    Totals and assessments cover endpoints with ``status: ok``. ``unreachable``
+    counts closed or filtered ports; ``no_tls`` and ``errors`` count endpoints
+    that answered but could not be assessed, and ``unassessed`` lists those so
+    a report never presents them as clean.
+    """
+    results = [r for r in endpoints if r.get('status', 'ok') == 'ok']
+    unassessed = [{'host': r.get('host'), 'port': r.get('port'), 'status': r.get('status')}
+                  for r in endpoints if r.get('status') in UNASSESSED_STATUSES]
+    total = len(results)
+    vulnerable = sum(1 for r in results if r.get('vulnerabilities'))
+
+    return {
+        'scan_date': scan_date or datetime.utcnow().isoformat(),
+        'total_endpoints': total,
+        'vulnerable_endpoints': vulnerable,
+        'risk_percentage': round(vulnerable / total * 100, 1) if total else 0,
+        'unreachable': sum(1 for r in endpoints if r.get('status') == 'unreachable'),
+        'no_tls': sum(1 for u in unassessed if u['status'] == 'no_tls'),
+        'errors': sum(1 for u in unassessed if u['status'] == 'error'),
+        'unassessed': unassessed,
+        'results': results,
+        'assessments': [assess_endpoint(r) for r in results],
+        'summary': {
+            'critical': sum(
+                1 for r in results for v in r.get('vulnerabilities') or []
+                if v.get('threat_level') == 'critical'
+            ),
+            'quantum_safe': total - vulnerable
         }
+    }
 
 
 def _is_ip_address(host):

@@ -2,6 +2,7 @@
 
 import logging
 import os
+import threading
 
 import pytest
 from cryptography.hazmat.backends import default_backend
@@ -163,3 +164,59 @@ def test_scan_directory_recurses_and_ignores_other_extensions(tmp_path):
     result = cm.scan_directory(str(tmp_path))
 
     assert [c["source"] for c in result["certificates"]] == [str(nested / "server.crt")]
+
+
+def _finishes_within(limit, func, *args):
+    box = {}
+    worker = threading.Thread(target=lambda: box.setdefault("result", func(*args)),
+                              daemon=True)
+    worker.start()
+    worker.join(limit)
+    return not worker.is_alive(), box.get("result")
+
+
+def test_fifo_with_certificate_extension_is_skipped_without_blocking(tmp_path):
+    os.mkfifo(str(tmp_path / "pipe.pem"))
+    (tmp_path / "real.pem").write_bytes(fixture("rsa2048-sha256-cert.pem"))
+
+    finished, result = _finishes_within(5, cm.scan_directory, str(tmp_path))
+
+    assert finished, "reading a FIFO blocked the inventory"
+    assert [c["source"] for c in result["certificates"]] == [str(tmp_path / "real.pem")]
+    assert [u["path"] for u in result["unreadable"]] == [str(tmp_path / "pipe.pem")]
+    assert "regular file" in result["unreadable"][0]["reason"]
+
+
+def test_oversized_file_is_skipped_and_reported(tmp_path, monkeypatch):
+    monkeypatch.setattr(cm, "MAX_FILE_BYTES", 4096)
+    big = tmp_path / "bundle.pem"
+    big.write_bytes(fixture("rsa2048-sha256-cert.pem") * 4)
+
+    result = cm.scan_directory(str(tmp_path))
+
+    assert result["certificates"] == []
+    assert result["unreadable"] == [{"path": str(big), "reason": "larger than 4096 bytes"}]
+
+
+def test_load_file_refuses_non_regular_files(tmp_path):
+    fifo = str(tmp_path / "pipe.crt")
+    os.mkfifo(fifo)
+
+    finished, error = _finishes_within(5, _load_error, fifo)
+
+    assert finished, "load_file blocked on a FIFO"
+    assert isinstance(error, OSError)
+
+
+def _load_error(path):
+    try:
+        cm.load_file(path)
+    except OSError as exc:
+        return exc
+    return None
+
+
+def test_files_without_certificates_are_not_reported_as_unreadable():
+    result = cm.scan_directory(FIXTURES)
+
+    assert result["unreadable"] == []

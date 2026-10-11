@@ -5,7 +5,9 @@ Turn assessments into an ordered post-quantum migration roadmap.
 ``none``) by ``(component, algorithm)``, so each phase covers one algorithm
 in one role across all targets that use it. Phases are ordered by the highest
 risk score among their targets, then by threat class (``shor`` before
-``classical`` before ``grover``), then by how many targets they cover.
+``classical`` before ``grover`` before ``unknown``), then by how many targets
+they cover. ``unknown`` phases are suites the parser could not classify; their
+replacement is the finding's own "review manually" recommendation.
 
 Each phase names a replacement, a hybrid interim step for public-key
 algorithms and, when benchmark results are supplied, the measured cost of
@@ -53,7 +55,7 @@ REPLACEMENTS = {
     },
 }
 
-THREAT_ORDER = {'shor': 0, 'classical': 1, 'grover': 2}
+THREAT_ORDER = {'shor': 0, 'classical': 1, 'grover': 2, 'unknown': 3}
 TIME_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
 
 

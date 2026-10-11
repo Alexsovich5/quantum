@@ -47,3 +47,22 @@ def test_scan_fail_on_critical_exits_1(tmp_path):
 
     assert result.returncode == 1, result.stderr
     assert glob.glob(str(tmp_path / "scan-*.json"))
+
+
+def test_roadmap_from_json_round_trips_a_real_scan_report(tmp_path):
+    scan = _run("scan", "-c", CONFIG, "-o", str(tmp_path / "scan"))
+    assert scan.returncode == 0, scan.stderr
+    [report_path] = glob.glob(str(tmp_path / "scan" / "scan-*.json"))
+    with open(report_path) as handle:
+        scanned = json.load(handle)
+
+    result = _run("roadmap", "-c", CONFIG, "--from-json", report_path, "-o", str(tmp_path / "rm"))
+
+    assert result.returncode == 0, result.stderr
+    [rebuilt_path] = glob.glob(str(tmp_path / "rm" / "scan-*.json"))
+    with open(rebuilt_path) as handle:
+        rebuilt = json.load(handle)
+    endpoint_scores = {a["target"]: a["risk_score"] for a in rebuilt["assessments"]
+                       if ":" in a["target"]}
+    assert endpoint_scores == {a["target"]: a["risk_score"] for a in scanned["assessments"]}
+    assert rebuilt["no_tls"] == 0 and rebuilt["unassessed"] == []

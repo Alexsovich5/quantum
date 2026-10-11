@@ -16,6 +16,9 @@ CASES = [
     ("ECDHE-ECDSA-AES256-SHA384", "ECDH", "ECDSA", "AES-256-CBC", 256, "SHA384"),
     ("ECDHE-ECDSA-AES128-CCM8", "ECDH", "ECDSA", "AES-128-CCM8", 128, "AEAD"),
     ("ECDHE-RSA-DES-CBC3-SHA", "ECDH", "RSA", "3DES-CBC", 168, "SHA1"),
+    # OpenSSL spells the ECDHE-RSA ARIA suites without "-RSA"
+    ("ECDHE-ARIA128-GCM-SHA256", "ECDH", "RSA", "ARIA-128-GCM", 128, "AEAD"),
+    ("ECDHE-ARIA256-GCM-SHA384", "ECDH", "RSA", "ARIA-256-GCM", 256, "AEAD"),
     # finite-field DHE, including the EDH alias
     ("DHE-RSA-AES256-GCM-SHA384", "DH", "RSA", "AES-256-GCM", 256, "AEAD"),
     ("DHE-RSA-AES128-SHA256", "DH", "RSA", "AES-128-CBC", 128, "SHA256"),
@@ -95,3 +98,13 @@ def test_static_rsa_and_dhe_are_no_longer_confused():
     assert parse_suite("DHE-RSA-AES128-SHA")["kex"] == "DH"
     assert parse_suite("DHE-RSA-AES128-SHA")["auth"] == "RSA"
     assert parse_suite("AES128-SHA")["kex"] == "RSA"
+
+
+def test_every_candidate_suite_of_the_local_openssl_is_classified():
+    """A suite the scanner can negotiate must never fall through as 'unknown'."""
+    from quantum_tool.crypto_scanner import CryptoScanner
+
+    unknown = [name for name in CryptoScanner.candidate_suites()
+               if UNKNOWN["kex"] in (parse_suite(name)["kex"], parse_suite(name)["cipher"])]
+
+    assert unknown == []

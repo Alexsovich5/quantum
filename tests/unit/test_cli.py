@@ -3,6 +3,8 @@
 import glob
 import json
 import os
+import ssl
+import threading
 from unittest import mock
 
 import pytest
@@ -10,7 +12,7 @@ from click.testing import CliRunner
 
 from quantum_tool import cli
 from quantum_tool.crypto_scanner import CryptoScanner
-from tests.unit.fakes import FakeSSLSocket, fake_connection
+from tests.unit.fakes import FakeRawSocket, FakeSSLSocket, fake_connection
 
 FIXTURES = os.path.join(os.path.dirname(os.path.dirname(__file__)), "fixtures", "tls")
 
@@ -214,3 +216,102 @@ def test_roadmap_from_json_skips_scanning(runner, tmp_path):
         text = handle.read()
     assert "key_exchange ECDH -> Kyber768" in text
     assert "## Benchmark" in text
+
+
+# --- fail closed: unassessed endpoints, unreadable files, malformed reports -----------------
+
+def _scan_no_tls(runner, tmp_path, args):
+    config = _write_config(tmp_path, "targets: [192.0.2.10]\nports: [443]\n"
+                                     "enumerate_ciphers: false\noutput_format: json\n")
+    with mock.patch("socket.create_connection", return_value=FakeRawSocket()), \
+            mock.patch.object(ssl.SSLContext, "wrap_socket", autospec=True,
+                              side_effect=ssl.SSLError(1, "wrong version number")):
+        return runner.invoke(cli.main, ["scan", "-c", config, "-o", str(tmp_path / "o")]
+                             + args)
+
+
+def test_fail_on_exits_1_when_an_endpoint_could_not_be_assessed(runner, tmp_path):
+    result = _scan_no_tls(runner, tmp_path, ["--fail-on", "critical"])
+
+    assert result.exit_code == 1, result.output
+    assert "not assessed" in result.stderr
+
+
+def test_unassessed_endpoints_are_reported_without_fail_on(runner, tmp_path):
+    result = _scan_no_tls(runner, tmp_path, [])
+
+    assert result.exit_code == 0, result.output
+    assert "1 endpoint(s) accepted TCP but completed no TLS 1.2+ handshake" in result.stderr
+
+
+def test_fail_on_exits_1_when_every_endpoint_is_unreachable(runner, tmp_path):
+    config = _write_config(tmp_path, "targets: [192.0.2.10]\nports: [443]\n")
+    with mock.patch("socket.create_connection",
+                    side_effect=ConnectionRefusedError(111, "Connection refused")):
+        result = runner.invoke(cli.main, ["scan", "-c", config, "-o", str(tmp_path / "o"),
+                                          "--fail-on", "low"])
+
+    assert result.exit_code == 1
+    assert "nothing was assessed" in result.stderr
+
+
+def _invoke_within(limit, runner, args):
+    """runner.invoke in a thread so a blocking read fails the test instead of hanging it."""
+    box = {}
+    worker = threading.Thread(target=lambda: box.setdefault("r", runner.invoke(cli.main, args)),
+                              daemon=True)
+    worker.start()
+    worker.join(limit)
+    assert not worker.is_alive(), "command blocked"
+    return box["r"]
+
+
+def test_certs_fail_on_exits_1_for_unreadable_files(runner, tmp_path):
+    os.mkfifo(str(tmp_path / "pipe.pem"))
+
+    result = _invoke_within(10, runner, ["certs", "--fail-on", "critical", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "pipe.pem" in result.stderr
+
+
+def test_certs_explicit_unreadable_file_is_an_error_not_a_traceback(runner, tmp_path):
+    fifo = str(tmp_path / "pipe.pem")
+    os.mkfifo(fifo)
+
+    result = _invoke_within(10, runner, ["certs", fifo])
+
+    assert result.exit_code == 2
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "regular file" in result.stderr
+
+
+@pytest.mark.parametrize("content", ["{broken", '{"no_results": []}'])
+def test_roadmap_from_malformed_json_exits_2(runner, tmp_path, content):
+    source = tmp_path / "scan.json"
+    source.write_text(content)
+    config = _write_config(tmp_path, "bench_iterations: 1\n")
+
+    result = runner.invoke(cli.main, ["roadmap", "-c", config, "--from-json", str(source),
+                                      "-o", str(tmp_path / "o")])
+
+    assert result.exit_code == 2
+    assert isinstance(result.exception, SystemExit)
+    assert "scan report" in result.stderr
+
+
+def test_roadmap_from_json_recomputes_assessments_instead_of_trusting_them(runner, tmp_path):
+    report = {"results": [{"host": "h", "port": 443, "status": "ok",
+                           "negotiated_suite": "AES128-SHA", "certificate": None}],
+              "assessments": []}
+    source = tmp_path / "scan.json"
+    source.write_text(json.dumps(report))
+    config = _write_config(tmp_path, "bench_iterations: 1\noutput_format: markdown\n")
+
+    with mock.patch.object(cli, "_bench", return_value=[]):
+        result = runner.invoke(cli.main, ["roadmap", "-c", config, "--from-json", str(source),
+                                          "-o", str(tmp_path / "o"), "--fail-on", "critical"])
+
+    assert result.exit_code == 1, result.output
+    assert "migration phase(s)" in result.output
+    assert "0 migration phase(s)" not in result.output

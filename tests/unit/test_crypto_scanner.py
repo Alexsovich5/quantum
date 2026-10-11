@@ -3,6 +3,8 @@
 import os
 import socket
 import ssl
+import threading
+import time
 from unittest import mock
 
 import pytest
@@ -11,6 +13,7 @@ from quantum_tool.crypto_scanner import CryptoScanner
 
 from tests.unit.fakes import (FakeRawSocket, FakeSSLSocket, failing_connection,
                               fake_connection)
+from tests.unit.tls_server import trickling_server  # noqa: F401  (pytest fixture)
 
 DER_CERT_PATH = os.path.join(os.path.dirname(__file__), os.pardir, "fixtures", "tls",
                              "rsa2048-sha256-cert.der")
@@ -213,3 +216,90 @@ def test_generate_report_counts_only_ok_endpoints():
     assert report["unreachable"] == 1
     assert report["results"] == [ok]
     assert [a["target"] for a in report["assessments"]] == ["192.0.2.10:443"]
+
+
+# --- deadlines, error isolation and unassessed endpoints ----------------------------------
+
+def _finishes_within(limit, func, *args):
+    """Run func in a thread; return (finished, result, seconds)."""
+    box = {}
+    worker = threading.Thread(target=lambda: box.setdefault("result", func(*args)),
+                              daemon=True)
+    start = time.monotonic()
+    worker.start()
+    worker.join(limit)
+    return not worker.is_alive(), box.get("result"), time.monotonic() - start
+
+
+def _quick_scanner():
+    return CryptoScanner({"targets": [], "ports": [443], "timeout": 0.5,
+                          "enumerate_ciphers": False})
+
+
+def test_scan_host_gives_up_on_a_trickling_server(trickling_server):  # noqa: F811
+    finished, result, _ = _finishes_within(
+        5, _quick_scanner().scan_host, trickling_server.host, trickling_server.port)
+
+    assert finished, "handshake kept waiting past its deadline"
+    assert result["status"] == "no_tls"
+
+
+def test_tls13_probe_gives_up_on_a_trickling_server(trickling_server):  # noqa: F811
+    finished, result, _ = _finishes_within(
+        5, _quick_scanner().supports_tls13, trickling_server.host, trickling_server.port)
+
+    assert finished, "TLS 1.3 probe kept waiting past its deadline"
+    assert result is False
+
+
+def test_enumeration_gives_up_on_a_trickling_server(trickling_server):  # noqa: F811
+    scanner = _quick_scanner()
+    with mock.patch.object(CryptoScanner, "candidate_suites", return_value=["AES128-SHA"]):
+        finished, result, _ = _finishes_within(
+            5, scanner.enumerate_ciphers, trickling_server.host, trickling_server.port)
+
+    assert finished, "enumeration handshake kept waiting past its deadline"
+    assert result == []
+
+
+def test_one_failing_endpoint_does_not_abort_the_scan():
+    def scan_host(self, host, port):
+        if host == "192.0.2.10":
+            raise UnicodeError("label too long")
+        return self._failed_endpoint(host, port, "unreachable")
+
+    scanner = CryptoScanner({"targets": ["192.0.2.10", "192.0.2.11"], "ports": [443],
+                             "max_workers": 2})
+    with mock.patch.object(CryptoScanner, "scan_host", scan_host):
+        report = scanner.scan_all()
+
+    assert report["errors"] == 1
+    assert report["unreachable"] == 1
+    assert report["unassessed"] == [{"host": "192.0.2.10", "port": 443, "status": "error"}]
+
+
+def test_generate_report_counts_and_lists_no_tls_endpoints():
+    no_tls = make_scanner()._failed_endpoint("192.0.2.12", 8443, "no_tls")
+
+    report = make_scanner()._generate_report([no_tls])
+
+    assert report["no_tls"] == 1
+    assert report["errors"] == 0
+    assert report["unassessed"] == [{"host": "192.0.2.12", "port": 8443, "status": "no_tls"}]
+
+
+def test_scan_all_keeps_endpoint_order_with_bounded_submission():
+    hosts = ["192.0.2.%d" % i for i in range(1, 21)]
+    scanner = CryptoScanner({"targets": hosts, "ports": [443, 8443], "max_workers": 2})
+    seen = []
+
+    def scan_host(self, host, port):
+        seen.append((host, port))
+        return self._failed_endpoint(host, port, "no_tls")
+
+    with mock.patch.object(CryptoScanner, "scan_host", scan_host):
+        report = scanner.scan_all()
+
+    expected = [{"host": h, "port": p, "status": "no_tls"} for h in hosts for p in (443, 8443)]
+    assert report["unassessed"] == expected
+    assert sorted(seen) == sorted((e["host"], e["port"]) for e in expected)

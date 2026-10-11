@@ -2,7 +2,9 @@
 
 import copy
 import ipaddress
+import math
 import numbers
+import re
 
 import yaml
 
@@ -22,15 +24,48 @@ DEFAULTS = {
 }
 
 
+MAX_TIMEOUT = 300
+MAX_BENCH_ITERATIONS = 10000
+
+# RFC 1123 host name in ASCII (use the punycode form for IDNs); "_" is accepted
+# because Docker service and container names may contain it.
+_LABEL = r"[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?"
+HOSTNAME = re.compile(r"(?:%s)(?:\.%s)*\.?\Z" % (_LABEL, _LABEL))
+MAX_HOSTNAME = 253
+
+
 class ConfigError(ValueError):
     """Raised when the configuration file is missing, malformed or invalid."""
+
+
+class _StrictLoader(yaml.SafeLoader):
+    """SafeLoader that refuses a mapping with the same key twice."""
+
+
+def _unique_mapping(loader, node, deep=False):
+    loader.flatten_mapping(node)
+    seen = set()
+    for key_node, _value in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in seen
+        except TypeError:
+            break  # unhashable key: construct_mapping reports it
+        if duplicate:
+            raise ConfigError("duplicate key {!r} at line {}".format(
+                key, key_node.start_mark.line + 1))
+        seen.add(key)
+    return loader.construct_mapping(node, deep=deep)
+
+
+_StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _unique_mapping)
 
 
 def load_config(path):
     """Read a YAML config file and return the validated config with defaults filled in."""
     try:
         with open(path) as handle:
-            raw = yaml.safe_load(handle)
+            raw = yaml.load(handle, Loader=_StrictLoader)
     except OSError as exc:
         raise ConfigError("cannot read config file {}: {}".format(path, exc))
     except yaml.YAMLError as exc:
@@ -57,6 +92,24 @@ def _require_str_list(cfg, key):
         raise ConfigError("{} must be a list of strings, got {!r}".format(key, value))
 
 
+def _is_ip(text):
+    try:
+        ipaddress.ip_address(text)
+        return True
+    except ValueError:
+        return False
+
+
+def _check_targets(targets):
+    """Each target is a CIDR (checked by expand_targets), an IP or an ASCII host name."""
+    for target in targets:
+        if "/" in target or _is_ip(target):
+            continue
+        if len(target) > MAX_HOSTNAME or not HOSTNAME.match(target):
+            raise ConfigError("target {!r} is not an IP address, CIDR block or host "
+                              "name".format(target))
+
+
 def validate(raw):
     """Check a config mapping and return a new dict with defaults for missing keys."""
     if not isinstance(raw, dict):
@@ -71,6 +124,7 @@ def validate(raw):
     cfg.update(raw)
 
     _require_str_list(cfg, "targets")
+    _check_targets(cfg["targets"])
 
     ports = cfg["ports"]
     if not isinstance(ports, list):
@@ -78,15 +132,18 @@ def validate(raw):
     for port in ports:
         if not _is_int(port) or not 1 <= port <= 65535:
             raise ConfigError("ports entries must be integers 1..65535, got {!r}".format(port))
+    if len(set(ports)) != len(ports):
+        raise ConfigError("ports must not repeat a port, got {!r}".format(ports))
 
     timeout = cfg["timeout"]
     if (not isinstance(timeout, numbers.Real) or isinstance(timeout, bool)
-            or timeout <= 0):
-        raise ConfigError("timeout must be a number of seconds > 0, got {!r}".format(timeout))
+            or not math.isfinite(timeout) or not 0 < timeout <= MAX_TIMEOUT):
+        raise ConfigError("timeout must be a number of seconds > 0 and <= {}, got {!r}".format(
+            MAX_TIMEOUT, timeout))
 
     _require_int(cfg, "max_workers", 1, 256)
     _require_int(cfg, "max_hosts", 1)
-    _require_int(cfg, "bench_iterations", 1)
+    _require_int(cfg, "bench_iterations", 1, MAX_BENCH_ITERATIONS)
 
     if not isinstance(cfg["enumerate_ciphers"], bool):
         raise ConfigError("enumerate_ciphers must be true or false, got {!r}".format(

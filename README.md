@@ -14,17 +14,18 @@ Personal project built on the 2020-era stack (Python 3.8, pyOpenSSL, cryptograph
 **Implemented**
 
 - Target expansion: hostnames, IPs and CIDR blocks, with a `max_hosts` guard (`src/quantum_tool/config.py`)
-- Threaded TLS scanner recording protocol, negotiated suite, key bits and peer certificate; unreachable and non-TLS endpoints are reported as `unreachable` / `no_tls` (`src/quantum_tool/crypto_scanner.py`)
+- Threaded TLS scanner recording protocol, negotiated suite, key bits and peer certificate; unreachable, non-TLS and failed endpoints are reported as `unreachable` / `no_tls` / `error` instead of being dropped, and `timeout` bounds each whole handshake (`src/quantum_tool/crypto_scanner.py`)
 - Cipher-suite enumeration with pyOpenSSL: one TLS 1.2 handshake per candidate suite to record the server-offered set, plus a separate TLS 1.3 support check
 - Cipher-suite parsing into key exchange, authentication, bulk cipher and MAC (`src/quantum_tool/cipher_suites.py`)
-- Certificate and private-key inventory from the network and from `cert_paths` directories, deduplicated by SHA-256 fingerprint; key material is never emitted (`src/quantum_tool/certificate_manager.py`)
-- Vulnerability assessor mapping each algorithm to a threat class and level, with a documented 0–100 risk score (`src/quantum_tool/vulnerability_assessor.py`)
+- Certificate and private-key inventory from the network and from `cert_paths` directories, deduplicated by SHA-256 fingerprint; key material is never emitted; FIFOs, devices and files over 4 MiB are reported as unreadable instead of being read (`src/quantum_tool/certificate_manager.py`)
+- Vulnerability assessor mapping each algorithm to a threat class and level, with a documented 0–100 risk score; a suite the parser cannot classify is flagged `unknown` / `high` for manual review, never scored as safe (`src/quantum_tool/vulnerability_assessor.py`)
 - Kyber and Dilithium wrappers (`src/quantum_tool/algorithms/lattice_based.py`) and SPHINCS+ wrappers (`src/quantum_tool/algorithms/hash_based.py`) over liboqs-python
 - Benchmark of key generation, encapsulation/decapsulation and sign/verify times and object sizes (`src/quantum_tool/algorithms/benchmark.py`)
 - Migration engine grouping findings by vulnerable algorithm, ordered by risk, with PQC replacements, a hybrid interim recommendation and benchmark figures (`src/quantum_tool/migration_engine.py`)
-- JSON scan reports and a Jinja2-rendered Markdown roadmap (`src/quantum_tool/report.py`)
-- Click CLI: `scan`, `certs`, `bench` and `roadmap`, run as `python -m quantum_tool` (`src/quantum_tool/cli.py`)
-- Validated YAML configuration (`config/scan_config.yml`, `config/scan_config.docker.yml`)
+- JSON scan reports and a Jinja2-rendered Markdown roadmap with every value escaped; `roadmap --from-json` validates the report and recomputes its totals and assessments (`src/quantum_tool/report.py`)
+- Click CLI: `scan`, `certs`, `bench` and `roadmap`, run as `python -m quantum_tool` (`src/quantum_tool/cli.py`). `--fail-on` also exits 1 when the assessment is incomplete (an endpoint without a TLS 1.2+ handshake, a scan error, an unreadable certificate file, or nothing assessed), and those cases are always printed as warnings
+- Validated YAML configuration that rejects duplicate keys, malformed targets and non-finite or out-of-range timeouts (`config/scan_config.yml`, `config/scan_config.docker.yml`)
+- `make ports-check` fails if the rendered compose config publishes a port beyond 127.0.0.1 (`scripts/check_ports.py`); the stack publishes no ports
 
 **Not implemented / known limitations**
 
@@ -40,6 +41,8 @@ Personal project built on the 2020-era stack (Python 3.8, pyOpenSSL, cryptograph
 - The risk score is a transparent heuristic, not a formal threat model.
 - The `nginx:1.18.0` image on Docker Hub is a 2021 rebuild of the 1.18.0 release; it is pinned by digest.
 - No web UI; output is JSON and Markdown only.
+- The tool has no user accounts or authentication of its own; it is a local command-line tool and its compose stack publishes no ports.
+- An endpoint whose peer certificate cannot be parsed is still scored from its cipher suites, but its certificate findings (key, signature hash, validity) are missing from the score.
 
 ## Built with
 
@@ -75,6 +78,7 @@ docker-compose run --rm app python -m quantum_tool scan -c config/scan_config.do
 make test                # runs the suite inside the period image
 make unit                # unit tests only, no nginx containers
 make lint                # flake8
+make ports-check         # compose ports must be bound to 127.0.0.1
 ```
 
 Unit tests cover config validation, cipher-suite parsing, certificate and key parsing, threat
@@ -112,6 +116,7 @@ requirements-build.txt
 requirements-dev.txt
 requirements.txt
 scripts/
+  check_ports.py
   check_readme.py
   gen_test_certs.sh
 setup.cfg
@@ -161,6 +166,7 @@ tests/
     test_cipher_suites.py
     test_cli.py
     test_config.py
+    test_container_config.py
     test_crypto_scanner.py
     test_enumeration.py
     test_environment.py

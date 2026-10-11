@@ -191,3 +191,110 @@ def test_template_ships_as_package_data():
     finally:
         setuptools.setup = original
     assert "templates/*.j2" in captured["package_data"]["quantum_tool"]
+
+
+def _render(roadmap, report):
+    return rp.render_markdown(roadmap, report)
+
+
+def test_markdown_escapes_values_that_could_break_tables_or_inject_html():
+    roadmap = make_roadmap()
+    roadmap["phases"][0]["targets"] = ["/certs/a|b<img src=x onerror=alert(1)>.pem\nx"]
+    report = make_report()
+    report["results"][0]["host"] = "evil|host"
+
+    lines = _render(roadmap, report).splitlines()
+
+    assert "- Targets: /certs/a\\|b&lt;img src=x onerror=alert(1)&gt;.pem x" in lines
+    assert any(line.startswith("| evil\\|host:443 |") for line in lines)
+    assert not any("<img" in line for line in lines)
+
+
+def test_markdown_lists_unassessed_endpoints():
+    report = make_report()
+    report.update(no_tls=1, errors=1, unassessed=[
+        {"host": "old.test", "port": 443, "status": "no_tls"},
+        {"host": "bad.test", "port": 8443, "status": "error"}])
+
+    lines = _render(make_roadmap(), report).splitlines()
+
+    assert "| Not assessed (no TLS 1.2+ handshake) | 1 |" in lines
+    assert "| Scan errors | 1 |" in lines
+    assert "| old.test:443 | no_tls |" in lines
+    assert "| bad.test:8443 | error |" in lines
+
+
+def test_markdown_without_phases_does_not_claim_safety_when_nothing_was_assessed():
+    report = make_report()
+    report.update(total_endpoints=0, results=[], assessments=[], no_tls=2, unassessed=[
+        {"host": "old.test", "port": 443, "status": "no_tls"},
+        {"host": "old.test", "port": 8443, "status": "no_tls"}])
+    roadmap = {"generated_at": "2020-06-30T00:00:00Z", "phases": []}
+
+    text = _render(roadmap, report)
+
+    assert "no quantum-vulnerable or weak algorithms were found" not in text
+    assert "assessment is incomplete" in text
+
+
+def _write(tmp_path, data):
+    path = tmp_path / "scan.json"
+    path.write_text(data if isinstance(data, str) else json.dumps(data))
+    return str(path)
+
+
+@pytest.mark.parametrize("data", [
+    "{not json", "[]", {"results": "x"}, {"results": [1]}, {"no_results": []},
+    {"results": [], "unreachable": -1}, {"results": [], "unassessed": [{"host": "h"}]},
+    "NaN", '{"results": [], "results": []}',
+])
+def test_read_json_rejects_malformed_reports(tmp_path, data):
+    with pytest.raises(ValueError):
+        rp.read_json(_write(tmp_path, data))
+
+
+def test_read_json_rejects_oversized_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(rp, "MAX_REPORT_BYTES", 64)
+    with pytest.raises(ValueError, match="larger than 64 bytes"):
+        rp.read_json(_write(tmp_path, {"results": [], "pad": "x" * 100}))
+
+
+def test_read_json_rebuilds_totals_and_assessments_from_results(tmp_path):
+    data = {
+        "scan_date": "2020-06-30T00:00:00", "unreachable": 2,
+        "total_endpoints": 0, "assessments": [],
+        "results": [{"host": "h", "port": 443, "status": "ok",
+                     "negotiated_suite": "ECDHE-RSA-AES128-GCM-SHA256", "certificate": None,
+                     "vulnerabilities": [{"threat_level": "critical"}]}],
+        "unassessed": [{"host": "old", "port": 443, "status": "no_tls"}],
+    }
+
+    report = rp.read_json(_write(tmp_path, data))
+
+    assert report["total_endpoints"] == 1
+    assert report["unreachable"] == 2
+    assert report["no_tls"] == 1
+    assert report["scan_date"] == "2020-06-30T00:00:00"
+    [assessment] = report["assessments"]
+    assert assessment["target"] == "h:443" and assessment["risk_score"] > 0
+
+
+def test_read_json_refuses_a_fifo_without_blocking(tmp_path):
+    import threading
+
+    fifo = str(tmp_path / "scan.json")
+    os.mkfifo(fifo)
+    box = {}
+
+    def load():
+        try:
+            rp.read_json(fifo)
+        except ValueError as exc:
+            box["error"] = exc
+
+    worker = threading.Thread(target=load, daemon=True)
+    worker.start()
+    worker.join(5)
+
+    assert not worker.is_alive(), "read_json blocked on a FIFO"
+    assert "regular file" in str(box["error"])
