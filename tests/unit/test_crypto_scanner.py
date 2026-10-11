@@ -17,12 +17,14 @@ DER_CERT_PATH = os.path.join(os.path.dirname(__file__), os.pardir, "fixtures", "
 
 RESULT_KEYS = {
     "host", "port", "status", "protocol", "cipher_suite", "key_exchange", "auth_algorithm",
-    "key_bits", "certificate", "scan_time", "vulnerabilities",
+    "key_bits", "certificate", "scan_time", "vulnerabilities", "tls13", "negotiated_suite",
+    "offered_suites",
 }
 
 
 def make_scanner():
-    return CryptoScanner({"targets": ["192.0.2.10"], "ports": [443], "timeout": 3})
+    return CryptoScanner({"targets": ["192.0.2.10"], "ports": [443], "timeout": 3,
+                          "enumerate_ciphers": False})
 
 
 def test_scan_host_returns_documented_keys():
@@ -40,6 +42,8 @@ def test_scan_host_returns_documented_keys():
     assert result["protocol"] == "TLSv1.2"
     assert result["cipher_suite"] == "ECDHE-RSA-AES256-GCM-SHA384"
     assert result["key_bits"] == 256
+    assert result["negotiated_suite"] == "ECDHE-RSA-AES256-GCM-SHA384"
+    assert result["offered_suites"] == [] and result["tls13"] is False
     cert = result["certificate"]
     assert (cert["key_type"], cert["key_bits"], cert["signature_hash"]) == ("RSA", 2048, "sha256")
     assert cert["source"] == "network"

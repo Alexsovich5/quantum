@@ -268,12 +268,13 @@ configured in §8, TLS 1.3 negotiating `TLS_AES_256_GCM_SHA384`):
 
 | Endpoint | Scoring findings | Score |
 |---|---|---|
-| `tls-legacy` | Shor base 50 (static RSA kex, RSA auth, RSA cert key) + 3DES 15 + SHA-1 cert signature 15 + HMAC-SHA1 5 + AES-128 5 + validity 10 | **100** |
+| `tls-legacy` | Shor base 50 (static RSA kex, RSA auth, RSA cert key) + SHA-1 cert signature 15 + HMAC-SHA1 5 + AES-128 5 + validity 10 (only `AES128-SHA` is offered, see §11) | **85** |
 | `tls-rsa` | Shor base 50 (ECDH/DH/static RSA kex, RSA auth, RSA cert key) + AES-128 5 + HMAC-SHA1 5 (from `AES128-SHA`) + validity 10; SHA-256 0 | **70** |
 | `tls-ecdsa` | Shor base 50 (ECDH kex, ECDSA auth, EC cert key) + validity 10; AES-256, CHACHA20, SHA-384, SHA-256 0 | **60** |
 
-Strict order: `tls-legacy` (100) > `tls-rsa` (70) > `tls-ecdsa` (60). Should `DES-CBC3-SHA` not be
-accepted by the nginx image (see §11), `tls-legacy` scores 85 and stays highest.
+Strict order: `tls-legacy` (85) > `tls-rsa` (70) > `tls-ecdsa` (60). A server that also accepted
+`DES-CBC3-SHA` would add 3DES 15 and score 100; Debian's OpenSSL 1.1.1d (used by both nginx and
+the scanner) has no 3DES suites, so `tls-legacy` cannot offer it (§11).
 
 ### 5.5 CLI
 
@@ -392,8 +393,9 @@ snapshot).
     only, TLS 1.2 + 1.3;
   - `tls-legacy`: RSA-2048 cert signed with SHA-1, TLS 1.2 only,
     `DES-CBC3-SHA:AES128-SHA:@SECLEVEL=0`. Python 3.8's `create_default_context` excludes 3DES,
-    so the stdlib `scan_host` handshake negotiates `AES128-SHA`; only the pyOpenSSL enumeration
-    finds `DES-CBC3-SHA`. This container runs with `OPENSSL_CONF` pointing at
+    so the stdlib `scan_host` handshake negotiates `AES128-SHA`. Debian's OpenSSL 1.1.1d is
+    built without 3DES suites (OpenSSL's 1.1.0+ default), so nginx keeps only `AES128-SHA` from
+    this list and the pyOpenSSL enumeration finds exactly that suite. This container runs with `OPENSSL_CONF` pointing at
     `docker/nginx/openssl-legacy.cnf` (`CipherString = DEFAULT@SECLEVEL=0`), because Debian's
     default `SECLEVEL=2` makes nginx refuse to load the SHA-1-signed certificate.
   Certificates, keys and the 2048-bit DH parameter file (`dhparam-2048.pem`) are self-signed /
@@ -441,8 +443,8 @@ history).
   iterations.
 - **Integration tests** (`tests/integration/`, marker `integration`): scan the three nginx
   targets through compose DNS names; assert negotiated protocol, offered-suite sets
-  (e.g. `AES128-SHA` found on `tls-rsa`, `DES-CBC3-SHA` on `tls-legacy`), certificate key types,
-  exact risk scores 100 / 70 / 60 for `tls-legacy` / `tls-rsa` / `tls-ecdsa` at a fixed `now`, and
+  (e.g. `AES128-SHA` found on `tls-rsa`, only `AES128-SHA` on `tls-legacy`), certificate key types,
+  exact risk scores 85 / 70 / 60 for `tls-legacy` / `tls-rsa` / `tls-ecdsa` at a fixed `now`, and
   that `python -m quantum_tool roadmap` writes a Markdown file listing Kyber/Dilithium phases. An
   unreachable port asserts `status: unreachable`.
 - `make test` runs unit + integration; `make unit` runs unit only.
@@ -457,8 +459,9 @@ history).
 - Cipher enumeration only covers suites Debian's OpenSSL 1.1.1d build knows (stdlib `ssl`,
   cryptography and pyOpenSSL all use it); suites removed from OpenSSL (e.g. export ciphers) cannot
   be detected.
-- `DES-CBC3-SHA` depends on the nginx image's OpenSSL still accepting 3DES at `@SECLEVEL=0`; if
-  not, `tls-legacy` falls back to `AES128-SHA` plus the SHA-1 certificate (score 85).
+- 3DES suites cannot be detected: Debian's OpenSSL 1.1.1d (scanner and nginx image alike) is built
+  without them, so `DES-CBC3-SHA` is never offered by the client or accepted by `tls-legacy`, which
+  falls back to `AES128-SHA` plus the SHA-1 certificate (score 85).
 - liboqs-python 0.3.0 (commit `97e500c`) has a use-after-free, fixed upstream on 2020-07-07:
   `KeyEncapsulation.free()` / `Signature.free()` call `OQS_KEM_free` / `OQS_SIG_free` and then read
   `length_secret_key` from the freed struct to cleanse the secret key. The wrappers subclass both

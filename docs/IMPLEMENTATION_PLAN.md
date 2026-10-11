@@ -336,8 +336,8 @@ exactly that suite, and the server is still accepting after the full candidate l
 candidate contains `PSK`, `SRP` or an `ADH`/`AECDH` name; `enumerate_ciphers: false` →
 `offered_suites == []`. Integration (fixed `now`): `tls-rsa` offers include `AES128-SHA` and
 `DHE-RSA-AES256-GCM-SHA384`; `tls-ecdsa` offers only ECDSA suites; `tls-legacy` offers
-`DES-CBC3-SHA` (see Risks for the fallback) and has `tls13 == False`; risk scores are exactly
-`tls-legacy` 100, `tls-rsa` 70, `tls-ecdsa` 60 (SPEC §5.4).
+exactly `["AES128-SHA"]` (3DES fallback in effect, see Risks) and has `tls13 == False`; risk
+scores are exactly `tls-legacy` 85, `tls-rsa` 70, `tls-ecdsa` 60 (SPEC §5.4).
 
 **Acceptance:** `make test PYTEST_ARGS="tests/unit/test_enumeration.py tests/integration/test_enumeration.py" && make test && make lint`
 
@@ -615,9 +615,10 @@ a layout tree generated from the tracked files and a path check script.
   `OQS_KEM_free`/`OQS_SIG_free` (fixed upstream on 2020-07-07). All wrappers use the
   `SafeKeyEncapsulation`/`SafeSignature` overrides from T9, and the 1000-object loop test catches
   regressions.
-- **3DES availability in nginx:1.18.0's OpenSSL 1.1.1** — if `DES-CBC3-SHA` cannot be enabled even
-  with `@SECLEVEL=0`, `tls-legacy` falls back to `AES128-SHA` plus the SHA-1 certificate; its score
-  becomes 85 and stays the highest, and the T8 assertion changes to match.
+- **3DES availability in nginx:1.18.0's OpenSSL 1.1.1** — confirmed in T8: Debian's 1.1.1d build
+  (in both the nginx image and the app image) has no 3DES suites, so `DES-CBC3-SHA` cannot be
+  enabled even with `@SECLEVEL=0`. `tls-legacy` falls back to `AES128-SHA` plus the SHA-1
+  certificate; its score is 85 and stays the highest, and the T8 assertions match.
 - **nginx:1.18.0 is a 2021 rebuild** — last pushed 2021-04-10; pinned by digest so every run uses
   the same image.
 - **Client-side OpenSSL policy** — buster's `openssl.cnf` sets `MinProtocol=TLSv1.2` and
