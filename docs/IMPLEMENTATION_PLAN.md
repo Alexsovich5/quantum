@@ -562,8 +562,9 @@ benchmark and reports; includes a config for the simulated endpoints.
 `tools/readme_template.md`.
 
 **Files**
-- create `scripts/check_readme.py` — `--tree` prints a layout tree built from `git ls-files`
-  (plain Python, no `tree` binary); default mode extracts path-like tokens from README.md (every
+- create `scripts/check_readme.py` — `--tree` prints a layout tree built from
+  `git ls-files --cached --others --exclude-standard` (so files added in this task appear before
+  they are committed; plain Python, no `tree` binary); default mode extracts path-like tokens from README.md (every
   line of the Layout code block, plus inline-code spans containing `/` or ending in a file
   extension) and exits 1 listing any that do not exist (`os.path.exists`).
 - modify `README.md` — fill the template: title, one-paragraph description, "Personal project
