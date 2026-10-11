@@ -171,7 +171,8 @@ def test_shipped_config_validates():
 
 def test_scan_all_scans_each_expanded_address_not_the_cidr_string():
     scanner = CryptoScanner({"targets": ["10.0.1.0/30"], "ports": [443], "max_hosts": 1024})
-    with mock.patch.object(CryptoScanner, "scan_host", return_value=None) as scan_host:
+    down = {"status": "unreachable"}
+    with mock.patch.object(CryptoScanner, "scan_host", return_value=down) as scan_host:
         scanner.scan_all()
 
     scanned = sorted(call[0] for call in scan_host.call_args_list)

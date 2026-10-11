@@ -45,44 +45,72 @@ class CryptoScanner:
                     futures.append(executor.submit(self.scan_host, host, port))
 
             for future in futures:
-                result = future.result()
-                if result:
-                    results.append(result)
+                results.append(future.result())
 
         return self._generate_report(results)
 
     def scan_host(self, host, port):
-        """Scan a single host:port for TLS/crypto configuration."""
+        """Scan a single host:port for TLS/crypto configuration.
+
+        Returns the scan result with ``status: ok``, or an Endpoint with
+        ``status: unreachable`` (TCP connect failed) or ``no_tls`` (TCP connected
+        but no TLS 1.2+ handshake completed).
+        """
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+
         try:
-            context = ssl.create_default_context()
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE
-
-            with socket.create_connection((host, port), timeout=self.timeout) as sock:
-                with context.wrap_socket(sock, server_hostname=host) as ssock:
-                    cert = ssock.getpeercert(binary_form=True)
-                    cipher = ssock.cipher()
-                    protocol = ssock.version()
-
-                    result = {
-                        'host': host,
-                        'port': port,
-                        'protocol': protocol,
-                        'cipher_suite': cipher[0] if cipher else 'unknown',
-                        'key_exchange': self._extract_key_exchange(cipher),
-                        'auth_algorithm': self._extract_auth(cipher),
-                        'key_bits': cipher[2] if cipher else 0,
-                        'certificate': self._analyze_cert(cert),
-                        'scan_time': datetime.utcnow().isoformat(),
-                        'vulnerabilities': []
-                    }
-
-                    result['vulnerabilities'] = self._assess_vulnerabilities(result)
-                    return result
-
-        except (socket.timeout, ConnectionRefusedError, OSError) as e:
+            sock = socket.create_connection((host, port), timeout=self.timeout)
+        except OSError as e:
             logger.debug("Cannot connect to %s:%d - %s", host, port, e)
-            return None
+            return self._failed_endpoint(host, port, 'unreachable')
+
+        with sock:
+            try:
+                ssock = context.wrap_socket(sock, server_hostname=host)
+            except OSError as e:
+                logger.debug("No TLS handshake with %s:%d - %s", host, port, e)
+                return self._failed_endpoint(host, port, 'no_tls')
+
+            with ssock:
+                cert = ssock.getpeercert(binary_form=True)
+                cipher = ssock.cipher()
+                protocol = ssock.version()
+
+                result = {
+                    'host': host,
+                    'port': port,
+                    'status': 'ok',
+                    'protocol': protocol,
+                    'cipher_suite': cipher[0] if cipher else 'unknown',
+                    'key_exchange': self._extract_key_exchange(cipher),
+                    'auth_algorithm': self._extract_auth(cipher),
+                    'key_bits': cipher[2] if cipher else 0,
+                    'certificate': self._analyze_cert(cert),
+                    'scan_time': datetime.utcnow().isoformat(),
+                    'vulnerabilities': []
+                }
+
+                result['vulnerabilities'] = self._assess_vulnerabilities(result)
+                return result
+
+    @staticmethod
+    def _failed_endpoint(host, port, status):
+        """Endpoint record for a host:port where no TLS session was established."""
+        return {
+            'host': host,
+            'port': port,
+            'status': status,
+            'protocol': None,
+            'tls13': False,
+            'negotiated_suite': None,
+            'offered_suites': [],
+            'key_bits': None,
+            'certificate': None,
+            'scan_time': datetime.utcnow().isoformat(),
+        }
 
     def _extract_key_exchange(self, cipher):
         if not cipher:
@@ -121,8 +149,10 @@ class CryptoScanner:
             })
         return vulns
 
-    def _generate_report(self, results):
-        """Generate scan summary report."""
+    def _generate_report(self, endpoints):
+        """Generate scan summary report; totals cover only endpoints with a TLS session."""
+        results = [r for r in endpoints if r.get('status', 'ok') == 'ok']
+        unreachable = sum(1 for r in endpoints if r.get('status') == 'unreachable')
         total = len(results)
         vulnerable = sum(1 for r in results if r['vulnerabilities'])
 
@@ -131,6 +161,7 @@ class CryptoScanner:
             'total_endpoints': total,
             'vulnerable_endpoints': vulnerable,
             'risk_percentage': round(vulnerable / total * 100, 1) if total else 0,
+            'unreachable': unreachable,
             'results': results,
             'assessments': [assess_endpoint(r) for r in results],
             'summary': {

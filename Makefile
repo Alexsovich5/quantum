@@ -10,10 +10,10 @@ test:
 	$(COMPOSE) run --rm app pytest $(PYTEST_ARGS)
 
 unit:
-	$(COMPOSE) run --rm app pytest tests/unit $(PYTEST_ARGS)
+	$(COMPOSE) run --rm --no-deps app pytest -m "not integration" $(PYTEST_ARGS)
 
 lint:
-	$(COMPOSE) run --rm app flake8 src tests
+	$(COMPOSE) run --rm --no-deps app flake8 src tests
 
 shell:
 	$(COMPOSE) run --rm app bash

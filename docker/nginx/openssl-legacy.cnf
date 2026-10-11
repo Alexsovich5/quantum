@@ -1,0 +1,14 @@
+# OpenSSL configuration for the tls-legacy target only. Debian's default sets
+# CipherString = DEFAULT@SECLEVEL=2, which makes nginx refuse to load the
+# SHA-1-signed test certificate ("ca md too weak") before ssl_ciphers is applied.
+openssl_conf = default_conf
+
+[default_conf]
+ssl_conf = ssl_sect
+
+[ssl_sect]
+system_default = system_default_sect
+
+[system_default_sect]
+MinProtocol = TLSv1.2
+CipherString = DEFAULT@SECLEVEL=0

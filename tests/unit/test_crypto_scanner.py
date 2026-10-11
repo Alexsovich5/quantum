@@ -2,18 +2,21 @@
 
 import os
 import socket
+import ssl
+from unittest import mock
 
 import pytest
 
 from quantum_tool.crypto_scanner import CryptoScanner
 
-from tests.unit.fakes import FakeSSLSocket, failing_connection, fake_connection
+from tests.unit.fakes import (FakeRawSocket, FakeSSLSocket, failing_connection,
+                              fake_connection)
 
 DER_CERT_PATH = os.path.join(os.path.dirname(__file__), os.pardir, "fixtures", "tls",
                              "rsa2048-sha256-cert.der")
 
 RESULT_KEYS = {
-    "host", "port", "protocol", "cipher_suite", "key_exchange", "auth_algorithm",
+    "host", "port", "status", "protocol", "cipher_suite", "key_exchange", "auth_algorithm",
     "key_bits", "certificate", "scan_time", "vulnerabilities",
 }
 
@@ -31,6 +34,7 @@ def test_scan_host_returns_documented_keys():
         result = make_scanner().scan_host("192.0.2.10", 443)
 
     assert set(result) == RESULT_KEYS
+    assert result["status"] == "ok"
     assert result["host"] == "192.0.2.10"
     assert result["port"] == 443
     assert result["protocol"] == "TLSv1.2"
@@ -105,14 +109,39 @@ def test_unparsable_peer_certificate_is_recorded_as_none():
     assert result["cipher_suite"] == "AES128-SHA"
 
 
-def test_connection_refused_returns_none():
+UNREACHABLE_KEYS = {
+    "host", "port", "status", "protocol", "tls13", "negotiated_suite", "offered_suites",
+    "key_bits", "certificate", "scan_time",
+}
+
+
+def test_connection_refused_yields_unreachable_endpoint():
     with failing_connection(ConnectionRefusedError(111, "Connection refused")):
-        assert make_scanner().scan_host("192.0.2.10", 443) is None
+        ep = make_scanner().scan_host("192.0.2.10", 443)
+
+    assert set(ep) == UNREACHABLE_KEYS
+    assert ep["status"] == "unreachable"
+    assert (ep["host"], ep["port"]) == ("192.0.2.10", 443)
+    assert ep["protocol"] is None and ep["negotiated_suite"] is None
+    assert ep["tls13"] is False and ep["offered_suites"] == []
+    assert ep["key_bits"] is None and ep["certificate"] is None
 
 
-def test_timeout_returns_none():
+def test_timeout_yields_unreachable_endpoint():
     with failing_connection(socket.timeout("timed out")):
-        assert make_scanner().scan_host("192.0.2.10", 443) is None
+        assert make_scanner().scan_host("192.0.2.10", 443)["status"] == "unreachable"
+
+
+def test_failed_tls_handshake_yields_no_tls_endpoint():
+    raw = FakeRawSocket()
+    with mock.patch.object(socket, "create_connection", return_value=raw), \
+            mock.patch.object(ssl.SSLContext, "wrap_socket", autospec=True,
+                              side_effect=ssl.SSLError(1, "wrong version number")):
+        ep = make_scanner().scan_host("192.0.2.10", 80)
+
+    assert set(ep) == UNREACHABLE_KEYS
+    assert ep["status"] == "no_tls"
+    assert raw.closed
 
 
 def _result(vulns):
@@ -131,7 +160,7 @@ def test_generate_report_computes_risk_percentage():
     assert report["vulnerable_endpoints"] == 2
     assert report["risk_percentage"] == 66.7
     assert report["summary"] == {"critical": 3, "quantum_safe": 1}
-    assert report["results"] is results
+    assert report["results"] == results
     assert "scan_date" in report
 
 
@@ -155,7 +184,7 @@ def test_generate_report_adds_one_assessment_per_result():
     assert assessment["risk_score"] == 55
 
 
-def test_scan_all_skips_unreachable_endpoints():
+def test_scan_all_counts_unreachable_endpoints_outside_totals():
     scanner = CryptoScanner({"targets": ["192.0.2.10", "192.0.2.11"], "ports": [443],
                              "max_workers": 1})
     with failing_connection(ConnectionRefusedError(111, "Connection refused")) as connect:
@@ -163,4 +192,20 @@ def test_scan_all_skips_unreachable_endpoints():
 
     assert connect.call_count == 2
     assert report["total_endpoints"] == 0
+    assert report["unreachable"] == 2
     assert report["results"] == []
+    assert report["assessments"] == []
+
+
+def test_generate_report_counts_only_ok_endpoints():
+    ok = {"host": "192.0.2.10", "port": 443, "status": "ok", "cipher_suite": "AES128-SHA",
+          "certificate": None, "vulnerabilities": [CRITICAL]}
+    down = {"host": "192.0.2.11", "port": 443, "status": "unreachable", "certificate": None}
+    no_tls = {"host": "192.0.2.12", "port": 443, "status": "no_tls", "certificate": None}
+    report = make_scanner()._generate_report([ok, down, no_tls])
+
+    assert report["total_endpoints"] == 1
+    assert report["vulnerable_endpoints"] == 1
+    assert report["unreachable"] == 1
+    assert report["results"] == [ok]
+    assert [a["target"] for a in report["assessments"]] == ["192.0.2.10:443"]

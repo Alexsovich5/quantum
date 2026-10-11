@@ -277,6 +277,10 @@ record unreachable endpoints.
 - modify `docker-compose.yml` — services `tls-rsa`, `tls-ecdsa`, `tls-legacy` from
   `nginx:1.18.0@sha256:e90ac5331fe095cea01b121a3627174b2e33e06e83720e9a934c7b8ccc9c55a0`,
   mounting configs and `tests/fixtures/tls` read-only at `/etc/nginx/tls`; `app` `depends_on` them.
+- create `docker/nginx/openssl-legacy.cnf` — mounted into `tls-legacy` only and selected with
+  `OPENSSL_CONF`; same as Debian's system default but `CipherString = DEFAULT@SECLEVEL=0`.
+  Debian's `SECLEVEL=2` makes nginx reject the SHA-1-signed certificate at load time
+  (`ca md too weak`) before `ssl_ciphers ...:@SECLEVEL=0` takes effect.
 - modify `src/quantum_tool/crypto_scanner.py` — `scan_host` returns an `Endpoint` with
   `status: unreachable` (TCP connect fails) / `no_tls` (TCP ok, no TLS 1.2+ handshake) instead of
   `None`; `scan_all` counts only `ok` endpoints in the existing totals and adds an `unreachable`
@@ -284,7 +288,10 @@ record unreachable endpoints.
 - create `tests/integration/__init__.py`, `tests/integration/conftest.py` (waits up to 30 s
   for the three ports; fails clearly if they never open), `tests/integration/test_scan_host.py`
 - modify `tests/unit/test_crypto_scanner.py` (refused connection now yields `unreachable`).
-- modify `Makefile` — `unit` excludes `-m integration`; `test` runs everything.
+- modify `Makefile` — `unit` excludes `-m integration`; `test` runs everything. `unit` and `lint`
+  use `run --no-deps` so they do not start the nginx targets.
+- modify `tests/unit/test_config.py` — the CIDR-expansion test's `scan_host` mock returns an
+  `unreachable` Endpoint instead of `None`, matching the new contract.
 
 **Tests to write first:** `tls-rsa:443` negotiates TLSv1.3 and an RSA cert of 2048 bits;
 `tls-ecdsa:443` cert is EC P-256; `tls-legacy:443` negotiates TLSv1.2 with suite `AES128-SHA`
