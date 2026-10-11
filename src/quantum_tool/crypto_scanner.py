@@ -15,19 +15,10 @@ from concurrent.futures import ThreadPoolExecutor
 from quantum_tool.certificate_manager import parse_certificate
 from quantum_tool.cipher_suites import parse_suite
 from quantum_tool.config import DEFAULTS, expand_targets
+from quantum_tool.vulnerability_assessor import (  # noqa: F401  (re-exported)
+    QUANTUM_SAFE, QUANTUM_VULNERABLE, assess_endpoint, assess_suite)
 
 logger = logging.getLogger('crypto_scanner')
-
-# Algorithms vulnerable to quantum attacks
-QUANTUM_VULNERABLE = {
-    'RSA': {'threat': 'critical', 'alternative': 'CRYSTALS-Dilithium'},
-    'ECDSA': {'threat': 'critical', 'alternative': 'CRYSTALS-Dilithium'},
-    'ECDH': {'threat': 'critical', 'alternative': 'CRYSTALS-Kyber'},
-    'DSA': {'threat': 'critical', 'alternative': 'CRYSTALS-Dilithium'},
-    'DH': {'threat': 'critical', 'alternative': 'CRYSTALS-Kyber'},
-}
-
-QUANTUM_SAFE = ['AES-256', 'SHA-384', 'SHA-512', 'SHA3-256', 'SHA3-512']
 
 
 class CryptoScanner:
@@ -114,29 +105,20 @@ class CryptoScanner:
             return None
 
     def _assess_vulnerabilities(self, scan_result):
-        """Assess quantum vulnerabilities in scan results."""
+        """Summarise the Shor findings of the negotiated suite in the original shape."""
         vulns = []
-        kex = scan_result.get('key_exchange', '')
-        auth = scan_result.get('auth_algorithm', '')
-
-        if kex in QUANTUM_VULNERABLE:
-            info = QUANTUM_VULNERABLE[kex]
+        for finding in assess_suite(scan_result.get('cipher_suite')):
+            if finding['threat_class'] != 'shor':
+                continue
+            algorithm = finding['algorithm']
+            alternative = QUANTUM_VULNERABLE.get(algorithm, {}).get(
+                'alternative', 'CRYSTALS-Dilithium')
             vulns.append({
-                'type': 'key_exchange',
-                'algorithm': kex,
-                'threat_level': info['threat'],
-                'recommendation': f"Migrate to {info['alternative']}"
+                'type': finding['component'],
+                'algorithm': algorithm,
+                'threat_level': finding['threat_level'],
+                'recommendation': f"Migrate to {alternative}"
             })
-
-        if auth in QUANTUM_VULNERABLE:
-            info = QUANTUM_VULNERABLE[auth]
-            vulns.append({
-                'type': 'authentication',
-                'algorithm': auth,
-                'threat_level': info['threat'],
-                'recommendation': f"Migrate to {info['alternative']}"
-            })
-
         return vulns
 
     def _generate_report(self, results):
@@ -150,6 +132,7 @@ class CryptoScanner:
             'vulnerable_endpoints': vulnerable,
             'risk_percentage': round(vulnerable / total * 100, 1) if total else 0,
             'results': results,
+            'assessments': [assess_endpoint(r) for r in results],
             'summary': {
                 'critical': sum(
                     1 for r in results for v in r['vulnerabilities']

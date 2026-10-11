@@ -145,6 +145,16 @@ def test_generate_report_with_no_results_is_zero_risk():
     assert report["summary"] == {"critical": 0, "quantum_safe": 0}
 
 
+def test_generate_report_adds_one_assessment_per_result():
+    result = {"host": "192.0.2.10", "port": 443, "cipher_suite": "ECDHE-RSA-AES128-GCM-SHA256",
+              "certificate": None, "vulnerabilities": [CRITICAL]}
+    report = make_scanner()._generate_report([result])
+
+    [assessment] = report["assessments"]
+    assert assessment["target"] == "192.0.2.10:443"
+    assert assessment["risk_score"] == 55
+
+
 def test_scan_all_skips_unreachable_endpoints():
     scanner = CryptoScanner({"targets": ["192.0.2.10", "192.0.2.11"], "ports": [443],
                              "max_workers": 1})
