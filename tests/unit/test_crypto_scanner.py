@@ -1,5 +1,6 @@
 """Behaviour tests for CryptoScanner.scan_host and report generation."""
 
+import os
 import socket
 
 import pytest
@@ -7,6 +8,9 @@ import pytest
 from quantum_tool.crypto_scanner import CryptoScanner
 
 from tests.unit.fakes import FakeSSLSocket, failing_connection, fake_connection
+
+DER_CERT_PATH = os.path.join(os.path.dirname(__file__), os.pardir, "fixtures", "tls",
+                             "rsa2048-sha256-cert.der")
 
 RESULT_KEYS = {
     "host", "port", "protocol", "cipher_suite", "key_exchange", "auth_algorithm",
@@ -19,8 +23,10 @@ def make_scanner():
 
 
 def test_scan_host_returns_documented_keys():
+    with open(DER_CERT_PATH, "rb") as fh:
+        der = fh.read()
     fake = FakeSSLSocket(cipher=("ECDHE-RSA-AES256-GCM-SHA384", "TLSv1.2", 256),
-                         version="TLSv1.2", cert=b"x" * 812)
+                         version="TLSv1.2", cert=der)
     with fake_connection(fake) as patched:
         result = make_scanner().scan_host("192.0.2.10", 443)
 
@@ -30,7 +36,9 @@ def test_scan_host_returns_documented_keys():
     assert result["protocol"] == "TLSv1.2"
     assert result["cipher_suite"] == "ECDHE-RSA-AES256-GCM-SHA384"
     assert result["key_bits"] == 256
-    assert result["certificate"] == {"size_bytes": 812, "needs_migration": True}
+    cert = result["certificate"]
+    assert (cert["key_type"], cert["key_bits"], cert["signature_hash"]) == ("RSA", 2048, "sha256")
+    assert cert["source"] == "network"
     patched.connect.assert_called_once_with(("192.0.2.10", 443), timeout=3)
     assert patched.wrap.call_args[1]["server_hostname"] == "192.0.2.10"
     assert fake.closed and patched.raw.closed
@@ -85,7 +93,16 @@ def test_missing_cipher_and_certificate_fall_back_to_defaults():
 
     assert result["cipher_suite"] == "unknown"
     assert result["key_bits"] == 0
-    assert result["certificate"] == {}
+    assert result["certificate"] is None
+
+
+def test_unparsable_peer_certificate_is_recorded_as_none():
+    fake = FakeSSLSocket(cipher=("AES128-SHA", "TLSv1.2", 128), cert=b"x" * 812)
+    with fake_connection(fake):
+        result = make_scanner().scan_host("192.0.2.10", 443)
+
+    assert result["certificate"] is None
+    assert result["cipher_suite"] == "AES128-SHA"
 
 
 def test_connection_refused_returns_none():

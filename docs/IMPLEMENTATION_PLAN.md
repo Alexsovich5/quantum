@@ -183,7 +183,9 @@ directories with fingerprint deduplication.
 
 **Files**
 - create `scripts/gen_test_certs.sh` — uses `openssl` 1.1.1d in the app image to produce
-  self-signed test-only material with ten-year validity: for each of `rsa2048-sha256`,
+  self-signed test-only material with ten-year validity (issued with `openssl ca -selfsign`
+  and a fixed window 2020-06-01 to 2030-06-01, so the fixed test `now` falls inside it no matter
+  when the script is rerun): for each of `rsa2048-sha256`,
   `ec-p256-sha256`, `rsa2048-sha1` a `<name>-cert.pem` and `<name>-key.pem`, plus
   `rsa2048-sha256-cert.der` (DER copy of the same certificate), and
   `openssl dhparam -out tests/fixtures/tls/dhparam-2048.pem 2048` (DH parameters for the
@@ -197,7 +199,8 @@ directories with fingerprint deduplication.
   `*.pem`/`*.crt`/`*.cer`/`*.der`/`*.key`, files visited in sorted path order, certificates
   deduplicated by `fingerprint_sha256` keeping the first source, unparsable files skipped with a
   logged warning).
-- modify `src/quantum_tool/crypto_scanner.py` — `_analyze_cert` uses `parse_certificate`.
+- modify `src/quantum_tool/crypto_scanner.py` — `_analyze_cert` uses `parse_certificate`; a
+  missing or unparsable peer certificate gives `certificate: None` (Endpoint `CertInfo|None`).
 - modify `Makefile` — `certs` target runs the script inside the container.
 - create `tests/unit/test_certificate_manager.py`
 

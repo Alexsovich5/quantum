@@ -12,6 +12,7 @@ import logging
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
+from quantum_tool.certificate_manager import parse_certificate
 from quantum_tool.cipher_suites import parse_suite
 from quantum_tool.config import DEFAULTS, expand_targets
 
@@ -103,13 +104,14 @@ class CryptoScanner:
         return parse_suite(cipher[0])['auth']
 
     def _analyze_cert(self, cert_binary):
-        """Basic certificate analysis."""
+        """Parse the peer's DER certificate; None if absent or unparsable."""
         if not cert_binary:
-            return {}
-        return {
-            'size_bytes': len(cert_binary),
-            'needs_migration': True  # All current PKI certs need PQC migration
-        }
+            return None
+        try:
+            return parse_certificate(cert_binary, source='network')
+        except ValueError as e:
+            logger.warning("Cannot parse peer certificate: %s", e)
+            return None
 
     def _assess_vulnerabilities(self, scan_result):
         """Assess quantum vulnerabilities in scan results."""

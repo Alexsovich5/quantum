@@ -1,7 +1,7 @@
 COMPOSE ?= docker-compose
 PYTEST_ARGS ?=
 
-.PHONY: build test unit lint shell clean
+.PHONY: build test unit lint shell certs clean
 
 build:
 	$(COMPOSE) build app
@@ -17,6 +17,9 @@ lint:
 
 shell:
 	$(COMPOSE) run --rm app bash
+
+certs:
+	$(COMPOSE) run --rm app sh scripts/gen_test_certs.sh
 
 clean:
 	$(COMPOSE) down
