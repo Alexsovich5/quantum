@@ -12,6 +12,8 @@ import logging
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
+from quantum_tool.config import DEFAULTS, expand_targets
+
 logger = logging.getLogger('crypto_scanner')
 
 # Algorithms vulnerable to quantum attacks
@@ -34,17 +36,20 @@ class CryptoScanner:
         self.ports = config.get('ports', [443, 8443, 993, 995])
         self.timeout = config.get('timeout', 10)
         self.max_workers = config.get('max_workers', 20)
+        self.max_hosts = config.get('max_hosts', DEFAULTS['max_hosts'])
 
     def scan_all(self):
         """Scan all configured targets."""
-        logger.info("Starting crypto scan on %d targets", len(self.targets))
+        hosts = expand_targets(self.targets, self.max_hosts)
+        logger.info("Starting crypto scan on %d hosts from %d targets",
+                    len(hosts), len(self.targets))
         results = []
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = []
-            for target in self.targets:
+            for host in hosts:
                 for port in self.ports:
-                    futures.append(executor.submit(self.scan_host, target, port))
+                    futures.append(executor.submit(self.scan_host, host, port))
 
             for future in futures:
                 result = future.result()

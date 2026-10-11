@@ -1,5 +1,7 @@
 # Quantum Cryptography Scanner Configuration
 
+# The 10.0.x.0/24 targets below are example values; replace them with the
+# hosts, IPs or CIDR blocks you are allowed to scan.
 targets:
   - 10.0.1.0/24
   - 10.0.2.0/24
@@ -12,5 +14,13 @@ ports:
 
 timeout: 10
 max_workers: 20
+# Refuse to run when the targets expand to more addresses than this.
+max_hosts: 1024
+# Probe each server with pyOpenSSL to list every cipher suite it accepts.
+enumerate_ciphers: true
+# Directories searched recursively for certificate and key files.
+cert_paths: []
 output_format: json
 output_path: reports/
+# Repetitions per algorithm for the `bench` and `roadmap` commands.
+bench_iterations: 20

@@ -127,7 +127,8 @@ config.
 
 **Tests to write first:** defaults filled in; unknown key, port 0, port 70000, negative timeout,
 `output_format: xml` and a non-list `targets` raise `ConfigError`; `10.0.1.0/30` expands to
-`10.0.1.1`, `10.0.1.2`; `/32` and a hostname pass through unchanged; `/16` with `max_hosts=1024`
+`10.0.1.1`, `10.0.1.2`; a hostname passes through unchanged and a `/32` yields its single address
+(deviation: a literal `/32` string would still reach `create_connection`); `/16` with `max_hosts=1024`
 raises; the shipped `config/scan_config.yml` validates.
 
 **Acceptance:** `make test PYTEST_ARGS=tests/unit/test_config.py && make test && make lint`
