@@ -718,3 +718,70 @@ Fail closed on unassessed endpoints and harden input handling
 Report and gate on endpoints that could not be assessed, flag unclassified
 suites, bound handshakes and file reads, validate config and JSON reports.
 ```
+
+---
+
+## T17 — Security and hygiene hardening
+
+**Goal:** Second whole-repository review, covering the batch-wide required items for this repo:
+report escaping of scanned values (item 44), least privilege and credential scoping in the
+compose stack (item 45), and a re-check of the general batch 4 rules (item 33).
+
+**Found and changed**
+- **Markdown injection was only partly closed (item 44).** T16 escaped `\`, `|`, backticks,
+  `<`, `>`, `&` and line breaks. Brackets, parentheses, `*`, `_`, `#`, `!`, `~`, `$` and a
+  leading `-`/`+`/`1.` still had Markdown meaning, bare `http://…`, `www.…` and e-mail values
+  became autolinks, ANSI sequences, bidi overrides and zero-width characters passed through, a
+  lone surrogate from a `--from-json` report crashed the UTF-8 write, a non-string value (for
+  example a dict in place of a suite name) was rendered unescaped, and values had no length cap.
+  New `quantum_tool/escaping.py` holds the one helper used by every writer: `clean_text`
+  (strips control, ANSI, bidi/zero-width and surrogate characters, line breaks to spaces,
+  truncates to 256 characters), `markdown_text` (entities for `& < >`, backslash-escapes every
+  Markdown special character, escapes block starts, breaks `://` and `www.`), `markdown_join`
+  (each list item escaped and truncated on its own) and `terminal_text`. The Jinja2 `finalize`
+  hook is `markdown_text`, targets go through the `md_join` filter, the Markdown file is written
+  as UTF-8 and the JSON report with `ensure_ascii=True`. There is no HTML or CSV writer.
+- **Terminal escape injection in CLI output.** File names, host names, suites and error texts
+  were echoed raw; a certificate file named with ANSI/OSC sequences could rewrite the operator's
+  terminal. Every such value now goes through `terminal_text`.
+- **Compose services ran with default privileges (item 45).** All services now drop all
+  capabilities (nginx adds back only CHOWN, SETUID, SETGID and NET_BIND_SERVICE), set
+  `no-new-privileges:true` and run with a read-only root filesystem and tmpfs scratch space; the
+  app runs as the invoking user (`QUANTUM_UID`/`QUANTUM_GID`, exported by the Makefile) instead
+  of root; the network is `internal: true` (still `172.74.0.0/24`) since nothing needs outbound
+  access at runtime. `scripts/check_compose_security.py` / `make security-check` fail on
+  privileged mode, host namespaces, Docker-socket or credential-directory mounts, missing
+  `cap_drop: [ALL]` or no-new-privileges, `SYS_ADMIN`/`ALL` in `cap_add`, and credential-like
+  values in environment, build args, command, entrypoint or healthcheck.
+- **Committed-secret scan.** A test walks the repository and fails on AWS key ids,
+  credential-like assignments without a `stub-`/`lab-` value, URLs with userinfo, and private keys
+  outside `tests/fixtures/tls/` (the documented test-only keys).
+- The apt-source test now covers every Dockerfile and apt config in the repository, not only the
+  top-level Dockerfile.
+
+**Checked, no change needed**
+- No credentials, tokens or connection URLs exist in the tool or the compose file, so there is
+  nothing to scope or move into `secrets:`; nothing is published on the host.
+- Bounded work, strict parsing, fail-closed reporting and exact-match lookups from T16 still hold;
+  no HTTP endpoints, user accounts or directory integration exist (no CSRF/auth surface).
+- No era-performing comments, @author tags, AI mentions or debug leftovers.
+
+**Tests to write first:** `test_escaping.py` (control/ANSI/bidi/surrogate stripping, truncation,
+every special character escaped and round-tripping, block starts, autolinks, numbers kept,
+`markdown_join`); `test_report.py` (hostile host/suite/target/algorithm values keep the
+Markdown skeleton identical and render inert, truncation, non-string values, surrogates, ASCII
+JSON, lint tests: environment `finalize`, no escape bypass in the template, report.py writes only
+rendered or `ensure_ascii` JSON text); `test_cli.py` (no escape sequences on stdout/stderr from
+file names, report values or report paths); `test_container_config.py` (shipped compose is
+least-privileged and internal, each privilege/credential problem is reported, secret file
+references allowed, committed-secret scan, apt sources in every Dockerfile).
+
+**Acceptance:** `make build && make test && make lint && make ports-check && make security-check && docker-compose run --rm app python scripts/check_readme.py`
+
+**Commit message**
+```
+Escape scanned values everywhere and drop container privileges
+
+Route every report and console value through one escape helper and run the
+compose services least-privileged on an internal network.
+```

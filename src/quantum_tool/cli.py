@@ -10,6 +10,10 @@ Incomplete means: an endpoint answered but was not assessed (``no_tls`` or
 ``error``), a certificate/key file could not be read, or nothing at all was
 assessed. Each case is always printed to stderr; with ``--fail-on`` it also
 fails the run, so a broken scan cannot pass a CI gate.
+
+Values that come from scanned systems, file names or report files are passed
+through ``escaping.terminal_text`` before they are printed, so they cannot
+carry terminal escape sequences, control or bidi characters.
 """
 
 import logging
@@ -22,6 +26,7 @@ import yaml
 from quantum_tool import certificate_manager, report as report_writer
 from quantum_tool.config import ConfigError, DEFAULTS, load_config
 from quantum_tool.crypto_scanner import CryptoScanner
+from quantum_tool.escaping import terminal_text
 from quantum_tool.migration_engine import build_roadmap
 from quantum_tool.vulnerability_assessor import assess_certificate, assess_key
 
@@ -60,7 +65,7 @@ def _setup_logging(verbose):
 
 
 def _config_error(ctx, exc):
-    click.echo('config error: {}'.format(exc), err=True)
+    click.echo('config error: {}'.format(terminal_text(exc)), err=True)
     ctx.exit(2)
 
 
@@ -91,7 +96,8 @@ def coverage_problems(assessments, report=None, unreadable=()):
     if report.get('errors'):
         problems.append('{} endpoint(s) failed during the scan'.format(report['errors']))
     for item in unreadable:
-        problems.append('cannot read {}: {}'.format(item['path'], item['reason']))
+        problems.append('cannot read {}: {}'.format(terminal_text(item['path']),
+                                                    terminal_text(item['reason'])))
     if not assessments:
         problems.append('nothing was assessed')
     return problems
@@ -145,8 +151,8 @@ def _file_assessments(paths):
 def _file_error(exc):
     """One-line message for a file error: path and reason, no traceback."""
     if isinstance(exc, OSError) and exc.filename is not None:
-        return '{}: {}'.format(exc.filename, exc.strerror or exc)
-    return str(exc)
+        return '{}: {}'.format(terminal_text(exc.filename), terminal_text(exc.strerror or exc))
+    return terminal_text(exc)
 
 
 def _print_endpoints(report):
@@ -155,7 +161,8 @@ def _print_endpoints(report):
         target = '{}:{}'.format(result['host'], result['port'])
         assessment = risk.get(target, {})
         click.echo('{:<28} {:<8} {:<34} risk {:>3}  {}'.format(
-            target, result.get('protocol') or '-', result.get('negotiated_suite') or '-',
+            terminal_text(target), terminal_text(result.get('protocol') or '-'),
+            terminal_text(result.get('negotiated_suite') or '-'),
             assessment.get('risk_score', 0), highest_level(assessment)))
     if report.get('unreachable'):
         click.echo('{} endpoint(s) unreachable'.format(report['unreachable']))
@@ -163,7 +170,7 @@ def _print_endpoints(report):
 
 def _print_paths(paths):
     for path in paths:
-        click.echo('wrote {}'.format(path))
+        click.echo('wrote {}'.format(terminal_text(path)))
 
 
 def _write(ctx, result, roadmap, directory, fmt):
@@ -193,7 +200,7 @@ def _bench(ctx, names, iterations):
     try:
         return benchmark.run(list(names or benchmark.DEFAULT_ALGORITHMS), iterations)
     except ValueError as exc:
-        click.echo('error: {}'.format(exc), err=True)
+        click.echo('error: {}'.format(terminal_text(exc)), err=True)
         ctx.exit(2)
 
 
@@ -260,7 +267,8 @@ def certs(ctx, config_path, fail_on, verbose, paths):
         assessments.append(assessment)
         key = '{}-{}'.format(cert['key_type'], cert['curve'] or cert['key_bits'])
         click.echo('certificate {:<50} {:<18} {:<8} risk {:>3}  {}'.format(
-            cert['source'], key, cert['signature_hash'], assessment['risk_score'],
+            terminal_text(cert['source']), terminal_text(key),
+            terminal_text(cert['signature_hash']), assessment['risk_score'],
             highest_level(assessment)))
     for item in keys:
         assessment = assess_key(item)
@@ -268,7 +276,8 @@ def certs(ctx, config_path, fail_on, verbose, paths):
         detail = item['curve'] or item['key_bits'] or '-'
         key = '{}-{}'.format(item['key_type'], detail) if detail != '-' else item['key_type']
         click.echo('key         {:<50} {:<18} {:<8} risk {:>3}  {}'.format(
-            item['source'], key, '-', assessment['risk_score'], highest_level(assessment)))
+            terminal_text(item['source']), terminal_text(key), '-', assessment['risk_score'],
+            highest_level(assessment)))
     click.echo('{} certificate(s), {} key(s)'.format(len(certificates), len(keys)))
     _finish(ctx, assessments, fail_on, coverage_problems(assessments, unreadable=unreadable))
 
@@ -308,7 +317,7 @@ def roadmap(ctx, config_path, from_json, no_enum, output_dir, fail_on, verbose):
             result = report_writer.read_json(from_json)
         except (OSError, ValueError) as exc:
             click.echo('error: {} is not a usable scan report: {}'.format(
-                from_json, _file_error(exc)), err=True)
+                terminal_text(from_json), _file_error(exc)), err=True)
             ctx.exit(2)
     else:
         result = _run_scan(ctx, cfg)

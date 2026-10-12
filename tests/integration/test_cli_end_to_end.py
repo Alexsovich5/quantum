@@ -37,7 +37,7 @@ def test_roadmap_writes_json_and_markdown(tmp_path):
     with open(roadmaps[0]) as handle:
         text = handle.read()
     assert "-> Kyber768" in text
-    assert "-> DILITHIUM_3" in text
+    assert "-> DILITHIUM\\_3" in text
     assert "| tls-legacy:443 |" in text
     assert "## Benchmark" in text
 

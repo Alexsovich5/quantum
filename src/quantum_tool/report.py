@@ -8,9 +8,11 @@ and an endpoint summary through ``templates/roadmap.md.j2`` into
 ``output_format`` setting (docs/SPEC.md section 5.1). ``read_json`` loads an
 earlier scan report for ``roadmap --from-json``.
 
-Every value rendered into the Markdown is escaped (``markdown_cell``): file
-paths and host names come from the scanned environment and must not break
-the tables or carry HTML into a Markdown viewer.
+Every value rendered into the Markdown goes through ``escaping.markdown_text``
+(the Jinja2 ``finalize`` hook; lists through the ``md_join`` filter): host
+names, suites and file paths come from the scanned environment or from a
+report file and must not add headings, rows, links or HTML, nor carry control
+or bidi characters. The JSON report is written with ``ensure_ascii``.
 """
 
 import json
@@ -21,6 +23,7 @@ from datetime import datetime
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from quantum_tool.certificate_manager import UnreadableFile, read_regular_file
+from quantum_tool.escaping import markdown_join, markdown_text
 from quantum_tool.crypto_scanner import UNASSESSED_STATUSES, summarise
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates')
@@ -28,20 +31,6 @@ ROADMAP_TEMPLATE = 'roadmap.md.j2'
 FILE_TIMESTAMP = '%Y%m%dT%H%M%SZ'
 FORMATS = ('json', 'markdown', 'both')
 MAX_REPORT_BYTES = 50 * 1024 * 1024
-
-_MARKDOWN_ESCAPES = (
-    ('\\', '\\\\'), ('&', '&amp;'), ('<', '&lt;'), ('>', '&gt;'), ('|', '\\|'),
-    ('`', '\\`'), ('\r\n', ' '), ('\r', ' '), ('\n', ' '),
-)
-
-
-def markdown_cell(value):
-    """Escape a value for a Markdown table cell or list item; non-strings pass through."""
-    if not isinstance(value, str):
-        return value
-    for raw, escaped in _MARKDOWN_ESCAPES:
-        value = value.replace(raw, escaped)
-    return value
 
 
 def _file_timestamp(now):
@@ -63,16 +52,18 @@ def write_json(report, directory, roadmap=None, now=None):
     if roadmap is not None:
         data['roadmap'] = roadmap
     path = _output_file(directory, 'scan', 'json', now)
-    with open(path, 'w') as handle:
-        json.dump(data, handle, indent=2, sort_keys=True, default=str)
+    with open(path, 'w', encoding='ascii') as handle:
+        json.dump(data, handle, indent=2, sort_keys=True, default=str, ensure_ascii=True)
         handle.write('\n')
     return path
 
 
 def _environment():
-    return Environment(loader=FileSystemLoader(TEMPLATE_DIR), autoescape=False,
-                       finalize=markdown_cell, trim_blocks=True, lstrip_blocks=True,
-                       keep_trailing_newline=True, undefined=StrictUndefined)
+    env = Environment(loader=FileSystemLoader(TEMPLATE_DIR), autoescape=False,
+                      finalize=markdown_text, trim_blocks=True, lstrip_blocks=True,
+                      keep_trailing_newline=True, undefined=StrictUndefined)
+    env.filters['md_join'] = markdown_join
+    return env
 
 
 def _endpoint_rows(report):
@@ -132,7 +123,7 @@ def write_markdown(roadmap, report, directory, now=None):
     """Render the Markdown roadmap into ``directory``; return the file path."""
     text = render_markdown(roadmap, report)
     path = _output_file(directory, 'roadmap', 'md', now)
-    with open(path, 'w') as handle:
+    with open(path, 'w', encoding='utf-8') as handle:
         handle.write(text)
     return path
 

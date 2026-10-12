@@ -108,8 +108,8 @@ def test_markdown_has_one_section_per_phase(tmp_path):
     lines = text.splitlines()
     phase_headings = [line for line in lines if line.startswith("## Phase ")]
     assert phase_headings == [
-        "## Phase 1: key_exchange ECDH -> Kyber768",
-        "## Phase 2: authentication RSA -> DILITHIUM_3",
+        "## Phase 1: key\\_exchange ECDH -> Kyber768",
+        "## Phase 2: authentication RSA -> DILITHIUM\\_3",
         "## Phase 3: cipher AES-128 -> AES-256-GCM",
     ]
     assert "Keep ECDHE/RSA alongside Kyber/Dilithium" in text
@@ -123,7 +123,7 @@ def test_markdown_has_endpoint_table(tmp_path):
 
     assert "| Endpoint | Protocol | Negotiated suite | Risk score | Findings |" in lines
     assert "| rsa.test:443 | TLSv1.2 | ECDHE-RSA-AES128-GCM-SHA256 | 85 | 1 |" in lines
-    assert "| safe.test:8443 | TLSv1.2 | TLS_AES_256_GCM_SHA384 | 0 | 0 |" in lines
+    assert "| safe.test:8443 | TLSv1.2 | TLS\\_AES\\_256\\_GCM\\_SHA384 | 0 | 0 |" in lines
     assert "| Total endpoints | 2 |" in lines
     assert "| Vulnerable endpoints | 1 |" in lines
 
@@ -139,7 +139,7 @@ def test_markdown_benchmark_table_only_with_bench_data(tmp_path):
         lines = handle.read().splitlines()
     assert "## Benchmark" in lines
     assert "| Kyber768 | kem | 1184 | 2400 | 1088 | 0.05 | 0.06 | 0.05 |" in lines
-    assert "| DILITHIUM_3 | sig | 1472 | 3504 | 2701 | 0.2 | 0.6 | 0.2 |" in lines
+    assert "| DILITHIUM\\_3 | sig | 1472 | 3504 | 2701 | 0.2 | 0.6 | 0.2 |" in lines
 
 
 def test_markdown_without_phases_says_so(tmp_path):
@@ -205,7 +205,7 @@ def test_markdown_escapes_values_that_could_break_tables_or_inject_html():
 
     lines = _render(roadmap, report).splitlines()
 
-    assert "- Targets: /certs/a\\|b&lt;img src=x onerror=alert(1)&gt;.pem x" in lines
+    assert "- Targets: /certs/a\\|b&lt;img src=x onerror=alert\\(1\\)&gt;.pem x" in lines
     assert any(line.startswith("| evil\\|host:443 |") for line in lines)
     assert not any("<img" in line for line in lines)
 
@@ -220,7 +220,7 @@ def test_markdown_lists_unassessed_endpoints():
 
     assert "| Not assessed (no TLS 1.2+ handshake) | 1 |" in lines
     assert "| Scan errors | 1 |" in lines
-    assert "| old.test:443 | no_tls |" in lines
+    assert "| old.test:443 | no\\_tls |" in lines
     assert "| bad.test:8443 | error |" in lines
 
 
@@ -298,3 +298,185 @@ def test_read_json_refuses_a_fifo_without_blocking(tmp_path):
 
     assert not worker.is_alive(), "read_json blocked on a FIFO"
     assert "regular file" in str(box["error"])
+
+
+# --- untrusted values: every writer escapes through quantum_tool.escaping --------------------
+
+HOSTILE = [
+    "](http://evil.example)",
+    "<script>alert(1)</script>",
+    "x\n# Heading",
+    "a|b",
+    "``tick`` `x`",
+    "\u202egnp.exe",
+    "=cmd|' /C calc'!A0",
+    "\x1b[31mred\x1b[0m",
+    "![img](javascript:alert(1))",
+    "www.evil.example user@evil.example",
+    "1. item",
+    "- item\r\n| --- |",
+    "lone\ud800",
+]
+
+
+def _hostile_inputs(payload):
+    roadmap = make_roadmap(with_bench=True)
+    for item in roadmap["phases"]:
+        for key in ("component", "algorithm", "threat_class", "replacement", "hybrid"):
+            item[key] = payload
+        item["alternative"] = payload
+        item["targets"] = [payload, payload + "2"]
+        item["bench"] = dict(item["bench"] or KYBER768, algorithm=payload, kind=payload)
+    roadmap["generated_at"] = payload
+    report = make_report()
+    report["scan_date"] = payload
+    for result in report["results"]:
+        result.update(host=payload, protocol=payload, negotiated_suite=payload)
+    report["unassessed"] = [{"host": payload, "port": 443, "status": payload}]
+    report["no_tls"] = 1
+    return roadmap, report
+
+
+def _benign_inputs():
+    return _hostile_inputs("value")
+
+
+def _unescaped(text):
+    chars, i = [], 0
+    while i < len(text):
+        if text[i] == "\\":
+            i += 2
+            continue
+        chars.append(text[i])
+        i += 1
+    return "".join(chars)
+
+
+def _skeleton(text):
+    """Block structure of a Markdown text: headings, list items, table rows and cells."""
+    shape = []
+    for line in text.splitlines():
+        if line.startswith("#"):
+            shape.append(("heading", line.split(" ", 1)[0]))
+        elif line.startswith("|"):
+            shape.append(("row", _unescaped(line).count("|")))
+        elif line.startswith("- "):
+            shape.append(("item", line.split(":", 1)[0]))
+        else:
+            shape.append(("text" if line.strip() else "blank",))
+    return shape
+
+
+@pytest.mark.parametrize("payload", HOSTILE)
+def test_hostile_values_do_not_change_the_markdown_structure(payload):
+    benign = rp.render_markdown(*_benign_inputs())
+    hostile = rp.render_markdown(*_hostile_inputs(payload))
+
+    assert _skeleton(hostile) == _skeleton(benign)
+
+
+@pytest.mark.parametrize("payload", HOSTILE)
+def test_hostile_values_render_as_inert_text(payload):
+    benign = rp.render_markdown(*_benign_inputs())
+    hostile = rp.render_markdown(*_hostile_inputs(payload))
+
+    for char in "[]()`*_~#|!$@<>":
+        assert _unescaped(hostile).count(char) == _unescaped(benign).count(char), char
+    assert "://" not in hostile
+    assert "www." not in hostile.lower()
+    for char in ("\x1b", "\u202e", "\r", "\ud800"):
+        assert char not in hostile
+
+
+def test_untrusted_fields_are_truncated_in_the_markdown():
+    from quantum_tool import escaping
+
+    report = make_report()
+    report["results"][0]["host"] = "h" * 5000
+
+    text = rp.render_markdown(make_roadmap(), report)
+
+    assert "h" * escaping.MAX_FIELD_CHARS not in text
+    assert escaping.TRUNCATION_MARK in text
+
+
+def test_non_string_values_from_a_report_file_are_escaped():
+    report = make_report()
+    report["results"][0]["negotiated_suite"] = {"k": "<script>"}
+
+    text = rp.render_markdown(make_roadmap(), report)
+
+    assert "<script>" not in text
+    assert "&lt;script&gt;" in text
+
+
+def test_markdown_is_written_as_utf8_even_with_surrogates(tmp_path):
+    report = make_report()
+    report["results"][0]["host"] = "h\ud800\u00e9"
+
+    path = rp.write_markdown(make_roadmap(), report, str(tmp_path), now=NOW)
+
+    with open(path, encoding="utf-8") as handle:
+        assert "| h\u00e9:443 |" in handle.read()
+
+
+def test_json_report_writes_control_and_bidi_characters_as_escapes(tmp_path):
+    report = make_report()
+    report["results"][0]["host"] = "\x1b[31m\u202eevil\ud800"
+
+    path = rp.write_json(report, str(tmp_path), now=NOW)
+
+    with open(path, "rb") as handle:
+        raw = handle.read()
+    assert all(byte < 0x80 for byte in raw)
+    assert b"\x1b" not in raw
+    assert json.loads(raw.decode("ascii"))["results"][0]["host"] == "\x1b[31m\u202eevil\ud800"
+
+
+# --- lint: no writer may bypass the escape helper ---------------------------------------------
+
+def test_markdown_environment_escapes_every_expression():
+    from quantum_tool import escaping
+
+    env = rp._environment()
+
+    assert env.finalize is escaping.markdown_text
+    assert env.autoescape is False  # Markdown, not HTML: escaping is done by finalize
+    assert env.filters["md_join"] is escaping.markdown_join
+
+
+def test_roadmap_template_has_no_escape_bypass():
+    from jinja2 import nodes
+
+    env = rp._environment()
+    with open(os.path.join(rp.TEMPLATE_DIR, rp.ROADMAP_TEMPLATE)) as handle:
+        source = handle.read()
+    tree = env.parse(source)
+
+    allowed = {"default", "md_join"}
+    used = {f.name for f in tree.find_all(nodes.Filter)}
+    assert used <= allowed, used - allowed
+    assert not list(tree.find_all(nodes.ScopedEvalContextModifier))
+    assert not list(tree.find_all(nodes.EvalContextModifier))
+    assert "{% raw" not in source
+
+
+def test_report_module_writes_only_rendered_or_encoded_text():
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(rp))
+    writes = [node for node in ast.walk(tree)
+              if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+              and node.func.attr == "write"]
+    for call in writes:
+        [arg] = call.args
+        assert (isinstance(arg, ast.Name) and arg.id == "text") or \
+            (isinstance(arg, ast.Constant) and arg.value == "\n"), ast.dump(arg)
+    dumps = [node for node in ast.walk(tree)
+             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+             and node.func.attr in ("dump", "dumps")]
+    for call in dumps:
+        keywords = {kw.arg: kw.value for kw in call.keywords}
+        assert isinstance(keywords.get("ensure_ascii"), ast.Constant)
+        assert keywords["ensure_ascii"].value is True

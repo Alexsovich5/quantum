@@ -1,12 +1,44 @@
 version: "3.8"
 
+# Least privilege: every service drops all capabilities, sets no-new-privileges
+# and runs on a read-only root filesystem with tmpfs for scratch space. The
+# network is internal (no outbound route) and nothing is published on the host;
+# scripts/check_ports.py and scripts/check_compose_security.py enforce this.
+
+x-hardening: &hardening
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
 x-tls-target: &tls-target
+  <<: *hardening
   image: nginx:1.18.0@sha256:e90ac5331fe095cea01b121a3627174b2e33e06e83720e9a934c7b8ccc9c55a0
+  # The nginx master binds 443, creates its cache directories for the worker
+  # user and then switches its workers to that user; nothing else is added back.
+  cap_add:
+    - CHOWN
+    - SETUID
+    - SETGID
+    - NET_BIND_SERVICE
+  tmpfs:
+    - /var/cache/nginx
+    - /var/run
+    - /tmp
 
 services:
   app:
+    <<: *hardening
     build: .
     image: quantum:dev
+    # Runs as the invoking user (the Makefile exports QUANTUM_UID/QUANTUM_GID),
+    # so files written into the bind mount keep the host owner.
+    user: "${QUANTUM_UID:-1000}:${QUANTUM_GID:-1000}"
+    environment:
+      HOME: /tmp
+    tmpfs:
+      - /tmp
     volumes:
       - .:/app
     depends_on:
@@ -37,6 +69,7 @@ services:
 
 networks:
   default:
+    internal: true
     ipam:
       config:
         - subnet: 172.74.0.0/24

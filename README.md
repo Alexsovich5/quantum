@@ -22,10 +22,12 @@ Personal project built on the 2020-era stack (Python 3.8, pyOpenSSL, cryptograph
 - Kyber and Dilithium wrappers (`src/quantum_tool/algorithms/lattice_based.py`) and SPHINCS+ wrappers (`src/quantum_tool/algorithms/hash_based.py`) over liboqs-python
 - Benchmark of key generation, encapsulation/decapsulation and sign/verify times and object sizes (`src/quantum_tool/algorithms/benchmark.py`)
 - Migration engine grouping findings by vulnerable algorithm, ordered by risk, with PQC replacements, a hybrid interim recommendation and benchmark figures (`src/quantum_tool/migration_engine.py`)
-- JSON scan reports and a Jinja2-rendered Markdown roadmap with every value escaped; `roadmap --from-json` validates the report and recomputes its totals and assessments (`src/quantum_tool/report.py`)
+- JSON scan reports and a Jinja2-rendered Markdown roadmap; `roadmap --from-json` validates the report and recomputes its totals and assessments (`src/quantum_tool/report.py`)
+- One escape helper for scanned values (`src/quantum_tool/escaping.py`): host names, suites, paths and errors lose control characters, ANSI sequences and bidi/zero-width characters and are truncated to 256 characters; in the Markdown roadmap every Markdown/HTML special character is escaped and URLs, `www.` hosts and e-mail addresses cannot become links. The JSON report is written ASCII-only (`\uXXXX` escapes) and CLI output is cleaned the same way
 - Click CLI: `scan`, `certs`, `bench` and `roadmap`, run as `python -m quantum_tool` (`src/quantum_tool/cli.py`). `--fail-on` also exits 1 when the assessment is incomplete (an endpoint without a TLS 1.2+ handshake, a scan error, an unreadable certificate file, or nothing assessed), and those cases are always printed as warnings
 - Validated YAML configuration that rejects duplicate keys, malformed targets and non-finite or out-of-range timeouts (`config/scan_config.yml`, `config/scan_config.docker.yml`)
 - `make ports-check` fails if the rendered compose config publishes a port beyond 127.0.0.1 (`scripts/check_ports.py`); the stack publishes no ports
+- Least-privilege compose stack: every service drops all capabilities (nginx adds back only CHOWN, SETUID, SETGID and NET_BIND_SERVICE), sets no-new-privileges and has a read-only root filesystem; the app runs as the invoking user; the network is internal. `make security-check` (`scripts/check_compose_security.py`) fails on privileged mode, host namespaces, Docker socket or credential-directory mounts, missing cap_drop/no-new-privileges, and credentials in environment, build args, commands or healthchecks
 
 **Not implemented / known limitations**
 
@@ -41,7 +43,9 @@ Personal project built on the 2020-era stack (Python 3.8, pyOpenSSL, cryptograph
 - The risk score is a transparent heuristic, not a formal threat model.
 - The `nginx:1.18.0` image on Docker Hub is a 2021 rebuild of the 1.18.0 release; it is pinned by digest.
 - No web UI; output is JSON and Markdown only.
-- The tool has no user accounts or authentication of its own; it is a local command-line tool and its compose stack publishes no ports.
+- The tool has no user accounts or authentication of its own; it is a local command-line tool and its compose stack publishes no ports and runs on an internal network without outbound access.
+- Values in the Markdown roadmap are truncated to 256 characters; the JSON report keeps them in full.
+- The app container runs as `QUANTUM_UID:QUANTUM_GID`, which the Makefile sets to the invoking user; plain `docker-compose run` without them uses 1000:1000.
 - An endpoint whose peer certificate cannot be parsed is still scored from its cipher suites, but its certificate findings (key, signature hash, validity) are missing from the score.
 
 ## Built with
@@ -79,6 +83,7 @@ make test                # runs the suite inside the period image
 make unit                # unit tests only, no nginx containers
 make lint                # flake8
 make ports-check         # compose ports must be bound to 127.0.0.1
+make security-check      # compose services must be least-privileged and credential-free
 ```
 
 Unit tests cover config validation, cipher-suite parsing, certificate and key parsing, threat
@@ -116,6 +121,7 @@ requirements-build.txt
 requirements-dev.txt
 requirements.txt
 scripts/
+  check_compose_security.py
   check_ports.py
   check_readme.py
   gen_test_certs.sh
@@ -135,6 +141,7 @@ src/
     cli.py
     config.py
     crypto_scanner.py
+    escaping.py
     migration_engine.py
     report.py
     templates/
@@ -170,6 +177,7 @@ tests/
     test_crypto_scanner.py
     test_enumeration.py
     test_environment.py
+    test_escaping.py
     test_hash_based.py
     test_lattice_based.py
     test_migration_engine.py

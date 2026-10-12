@@ -214,7 +214,7 @@ def test_roadmap_from_json_skips_scanning(runner, tmp_path):
     assert len(markdown) == 1
     with open(markdown[0]) as handle:
         text = handle.read()
-    assert "key_exchange ECDH -> Kyber768" in text
+    assert "key\\_exchange ECDH -> Kyber768" in text
     assert "## Benchmark" in text
 
 
@@ -315,3 +315,53 @@ def test_roadmap_from_json_recomputes_assessments_instead_of_trusting_them(runne
     assert result.exit_code == 1, result.output
     assert "migration phase(s)" in result.output
     assert "0 migration phase(s)" not in result.output
+
+
+# --- console output never carries escape sequences from scanned names ------------------------
+
+def test_certs_output_strips_terminal_escapes_from_file_names(runner, tmp_path):
+    import shutil
+
+    shutil.copy(os.path.join(FIXTURES, "rsa2048-sha256-cert.pem"),
+                str(tmp_path / "\x1b[2J\x1b]0;owned\x07evil\u202e.pem"))
+    os.mkfifo(str(tmp_path / "\x1b[31mpipe.pem"))
+
+    result = _invoke_within(10, runner, ["certs", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    for stream in (result.output, result.stderr):
+        assert "\x1b" not in stream and "\x07" not in stream and "\u202e" not in stream
+    assert "evil.pem" in result.output
+    assert "pipe.pem" in result.stderr
+
+
+def test_scan_output_strips_terminal_escapes_from_report_values(runner, tmp_path):
+    report = {"results": [{"host": "h\x1b[2J", "port": 443, "status": "ok",
+                           "protocol": "TLSv1.2\x1b]0;x\x07",
+                           "negotiated_suite": "AES128-SHA\r\nfake line", "certificate": None}],
+              "unassessed": [{"host": "\x1b[31mold", "port": 443, "status": "no_tls"}]}
+    source = tmp_path / "scan\x1b[1m.json"
+    source.write_text(json.dumps(report))
+    config = _write_config(tmp_path, "bench_iterations: 1\noutput_format: json\n")
+
+    with mock.patch.object(cli, "_bench", return_value=[]):
+        result = runner.invoke(cli.main, ["roadmap", "-c", config, "--from-json", str(source),
+                                          "-o", str(tmp_path / "o")])
+
+    assert result.exit_code == 0, result.output
+    for stream in (result.output, result.stderr):
+        assert "\x1b" not in stream and "\x07" not in stream
+    assert "AES128-SHA fake line" in result.output
+    assert "\r" not in result.output
+
+
+def test_unusable_report_path_is_printed_without_escapes(runner, tmp_path):
+    source = tmp_path / "bad\x1b[2J.json"
+    source.write_text("{broken")
+    config = _write_config(tmp_path, "bench_iterations: 1\n")
+
+    result = runner.invoke(cli.main, ["roadmap", "-c", config, "--from-json", str(source)])
+
+    assert result.exit_code == 2
+    assert "\x1b" not in result.stderr
+    assert "bad.json is not a usable scan report" in result.stderr

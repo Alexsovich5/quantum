@@ -55,7 +55,7 @@ scan. Their cryptography is unknown, not safe.
 {% if phase.hybrid %}
 - Hybrid step: {{ phase.hybrid }}
 {% endif %}
-- Targets: {{ phase.targets | join(', ') }}
+- Targets: {{ phase.targets | md_join }}
 {% if phase.bench %}
 - Measured cost: see {{ phase.bench.algorithm }} in the benchmark table
 {% endif %}

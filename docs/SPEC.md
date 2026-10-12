@@ -213,9 +213,15 @@ The top-level JSON report keeps the existing `_generate_report` keys (`scan_date
 `unreachable`, `no_tls`, `errors`, `unassessed` (host, port and status of every `no_tls` /
 `error` endpoint), `assessments` and `roadmap`. The Markdown roadmap lists the unassessed
 endpoints and, when nothing or not everything was assessed, says the assessment is incomplete
-instead of "no vulnerable algorithms were found". Every value rendered into the Markdown is
-escaped (`\`, `|`, backticks, `<`, `>`, `&`, line breaks), since paths and host names come from
-the scanned environment.
+instead of "no vulnerable algorithms were found". Host names, suites, paths and other values
+come from the scanned environment or the report file and are untrusted. Every value rendered
+into the Markdown goes through one helper (`escaping.markdown_text`): control characters, ANSI
+sequences, bidi/zero-width characters and lone surrogates are removed, line breaks become
+spaces, the value is truncated to 256 characters, `&`, `<`, `>` become entities, every
+character with Markdown meaning (`` \ ` * _ [ ] ( ) { } # | ! ~ $ @ ``) is backslash-escaped, a
+leading `-`, `+` or `1.` is escaped, and `://` and `www.` are broken so no autolink can form.
+The JSON report is written with `ensure_ascii`, and console output passes values through the
+same cleaning step (`escaping.terminal_text`).
 
 ### 5.3 Python interfaces
 
@@ -315,6 +321,12 @@ unwritable output directory).
 `make ports-check` pipes the rendered `docker-compose config` into `scripts/check_ports.py`,
 which fails if any service publishes a port on anything but `127.0.0.1` or uses
 `network_mode: host`; the compose file currently publishes no ports at all.
+`make security-check` pipes the same config into `scripts/check_compose_security.py`, which
+fails unless every service has `cap_drop: [ALL]` and `no-new-privileges:true`, and refuses
+privileged mode, host namespaces, Docker-socket or credential-directory mounts, `SYS_ADMIN`/`ALL`
+in `cap_add`, and credential-like values in environment, build args, command, entrypoint or
+healthcheck. The shipped services also run with a read-only root filesystem, the app as the
+invoking user (`QUANTUM_UID`/`QUANTUM_GID`, exported by the Makefile), on an internal network.
 
 ## 6. Stack & pinned versions
 
